@@ -36,7 +36,7 @@ On a cluster, activate your environment first:
 
 ```bash
 module load miniconda
-conda activate py311
+conda activate your_venv
 pip install -e /path/to/generate-star-grid
 ```
 
