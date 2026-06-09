@@ -12,6 +12,39 @@ from typing import Union, Optional
 import datetime
 
 
+# Maps Python parameter keys to their MESA inlist name, directory label, and
+# format spec. This is the single place to register a new swept parameter —
+# update_inlist and make_run_dir_name both derive their behaviour from it.
+PARAM_FORMAT = {
+    "initial_mass":        {"label": "M",     "fmt": ".6f", "inlist_key": "initial_mass"},
+    "initial_y":           {"label": "Y",     "fmt": ".3f", "inlist_key": "initial_y"},
+    "initial_z":           {"label": "Z",     "fmt": ".4f", "inlist_key": "initial_z"},
+    "mixing_length_alpha": {"label": "alpha", "fmt": ".2f", "inlist_key": "mixing_length_alpha"},
+}
+
+
+def make_run_dir_name(params: dict) -> str:
+    """
+    Build the run directory name from a parameter dict.
+
+    Uses the canonical order and labels in PARAM_FORMAT. Only parameters
+    present in both params and PARAM_FORMAT are included, so adding a new
+    swept parameter to PARAM_FORMAT automatically includes it in all
+    directory and log file names without any other code changes.
+
+    Args:
+        params: Parameter dict (keys matching PARAM_FORMAT entries).
+
+    Returns:
+        Directory name string, e.g. 'M_0.700000_Y_0.270_Z_0.0200_alpha_2.00'.
+    """
+    parts = []
+    for key, spec in PARAM_FORMAT.items():
+        if key in params:
+            parts.append(f"{spec['label']}_{params[key]:{spec['fmt']}}")
+    return "_".join(parts)
+
+
 def extract_constants_from_subdir_name(name: str, keys: list) -> dict:
     """
     Extract parameter values encoded in a subdirectory name.
@@ -288,23 +321,19 @@ def update_inlist(template_text: str, params: dict, log_dir: str) -> str:
         Modified inlist text.
     """
     for key, val in params.items():
-        if key == "initial_mass":
+        if key not in PARAM_FORMAT:
+            continue
+        inlist_key = PARAM_FORMAT[key]["inlist_key"]
+        fmt = PARAM_FORMAT[key]["fmt"]
+        template_text = re.sub(
+            rf"{inlist_key}\s*=\s*[\d.eE+-]+",
+            f"{inlist_key} = {val:{fmt}}",
+            template_text,
+        )
+        # Zbase in &kap must match initial_z when using Type2 opacities.
+        if key == "initial_z":
             template_text = re.sub(
-                r"initial_mass\s*=\s*[\d.eE+-]+", f"initial_mass = {val:.6f}", template_text
-            )
-        elif key == "initial_y":
-            template_text = re.sub(
-                r"initial_y\s*=\s*[\d.eE+-]+", f"initial_y = {val:.4f}", template_text
-            )
-        elif key == "initial_z":
-            template_text = re.sub(
-                r"initial_z\s*=\s*[\d.eE+-]+", f"initial_z = {val:.4f}", template_text
-            )
-        elif key == "mixing_length_alpha":
-            template_text = re.sub(
-                r"mixing_length_alpha\s*=\s*[\d.eE+-]+",
-                f"mixing_length_alpha = {val:.4f}",
-                template_text,
+                r"Zbase\s*=\s*[\d.eE+-]+", f"Zbase = {val:{fmt}}", template_text
             )
 
     template_text = re.sub(r"log_directory\s*=\s*'.*?'", "log_directory = 'DATA'", template_text)
@@ -332,10 +361,7 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
         params: Parameter dict with keys initial_mass, initial_y, initial_z, mixing_length_alpha.
         log_path: File path where MESA stdout/stderr will be written.
     """
-    log_dir_name = (
-        f"M_{params['initial_mass']:.6f}_Y_{params['initial_y']:.3f}"
-        f"_Z_{params['initial_z']:.4f}_alpha_{params['mixing_length_alpha']:.2f}"
-    )
+    log_dir_name = make_run_dir_name(params)
     run_dir = mesa_dir / log_dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "DATA").mkdir(exist_ok=True)
@@ -384,10 +410,7 @@ def task_wrapper(args: tuple) -> None:
         args: Tuple of (params, template_file, mesa_dir).
     """
     params, template_file, mesa_dir = args
-    log_dir_name = (
-        f"M_{params['initial_mass']:.6f}_Y_{params['initial_y']:.3f}"
-        f"_Z_{params['initial_z']:.4f}_alpha_{params['mixing_length_alpha']:.2f}"
-    )
+    log_dir_name = make_run_dir_name(params)
     logs_dir = mesa_dir / "LOGS"
     logs_dir.mkdir(exist_ok=True)
     run_mesa_model(template_file, mesa_dir, params, logs_dir / f"log_{log_dir_name}.txt")
@@ -470,11 +493,7 @@ if __name__ == "__main__":
         logs_dir = this_grid_dir / "LOGS"
         logs_dir.mkdir(exist_ok=True)
 
-        log_dir_name = (
-            f"M_{params['initial_mass']:.6f}_Y_{params['initial_y']:.3f}"
-            f"_Z_{params['initial_z']:.4f}_alpha_{params['mixing_length_alpha']:.2f}"
-            f"_TASK_{idx}"
-        )
+        log_dir_name = make_run_dir_name(params) + f"_TASK_{idx}"
         run_mesa_model(
             this_grid_dir / "inlist_template",
             this_grid_dir,

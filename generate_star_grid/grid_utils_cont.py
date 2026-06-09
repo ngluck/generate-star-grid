@@ -16,6 +16,8 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor
 
 from .grid_utils import (
+    PARAM_FORMAT,
+    make_run_dir_name,
     generate_grid,
     extract_constants_from_subdir_name,
     extract_constant_from_profile,
@@ -51,23 +53,18 @@ def update_inlist(
         Modified inlist text.
     """
     for key, val in params.items():
-        if key == "initial_mass":
+        if key not in PARAM_FORMAT:
+            continue
+        inlist_key = PARAM_FORMAT[key]["inlist_key"]
+        fmt = PARAM_FORMAT[key]["fmt"]
+        template_text = re.sub(
+            rf"{inlist_key}\s*=\s*[\d.eE+-]+",
+            f"{inlist_key} = {val:{fmt}}",
+            template_text,
+        )
+        if key == "initial_z":
             template_text = re.sub(
-                r"initial_mass\s*=\s*[\d.eE+-]+", f"initial_mass = {val:.4f}", template_text
-            )
-        elif key == "initial_y":
-            template_text = re.sub(
-                r"initial_y\s*=\s*[\d.eE+-]+", f"initial_y = {val:.4f}", template_text
-            )
-        elif key == "initial_z":
-            template_text = re.sub(
-                r"initial_z\s*=\s*[\d.eE+-]+", f"initial_z = {val:.4f}", template_text
-            )
-        elif key == "mixing_length_alpha":
-            template_text = re.sub(
-                r"mixing_length_alpha\s*=\s*[\d.eE+-]+",
-                f"mixing_length_alpha = {val:.4f}",
-                template_text,
+                r"Zbase\s*=\s*[\d.eE+-]+", f"Zbase = {val:{fmt}}", template_text
             )
 
     template_text = re.sub(r"log_directory\s*=\s*'.*?'", "log_directory = 'DATA'", template_text)
@@ -190,10 +187,7 @@ def task_wrapper(args: tuple) -> None:
     """
     params, template_file, mesa_dir, resume, modifications, tag = args
 
-    log_dir_name = (
-        f"M_{params['initial_mass']:.3f}_Y_{params['initial_y']:.3f}"
-        f"_Z_{params['initial_z']:.3f}_alpha_{params['mixing_length_alpha']:.2f}"
-    )
+    log_dir_name = make_run_dir_name(params)
     run_dir = mesa_dir / log_dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
