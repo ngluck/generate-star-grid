@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# MESA output data
+*.data
+*.mod
+*.hdf5
+*.h5
+
+# Grid run directories (DATA, model outputs, logs)
+DATA/
+grid_TAMS/
+grid_CONT/
+grid_inlists/
+LOGS/
+slurm_logs/
+slurm-*.out
+*.txt
+
+# MESA binary / compiled files
+star
+rn
+mk
+re
+make/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Editor
+.vscode/
+*.swp
+*~
