@@ -1,12 +1,3 @@
-from .grid_utils import (
-    generate_grid,
-    update_inlist,
-    run_mesa_model,
-    task_wrapper,
-    run_grid,
-    extract_constants_from_subdir_name,
-    extract_constant_from_profile,
-    load_history_with_constants_from_profile,
-    load_mesa_histories_from_subdirs,
-)
-from .resume_utils import get_next_resume_index, modify_inlist_for_resume
+# Public API — import from submodules directly, e.g.:
+#   from generate_star_grid.grid_utils import generate_grid, run_grid
+#   from generate_star_grid.resume_utils import modify_inlist_for_resume
