@@ -7,20 +7,26 @@ to grid_utils except that update_inlist and run_mesa_model handle the extra
 bookkeeping for loading/saving continuation models.
 """
 import shutil
+import sys
 import subprocess
 import importlib.util
 import argparse
 import datetime
 import re
 from pathlib import Path
+from typing import Optional
 from concurrent.futures import ProcessPoolExecutor
 
 from .grid_utils import (
     PARAM_FORMAT,
+    VALUE_SPEC_HELP,
     make_run_dir_name,
     generate_grid,
     compute_param_formats,
     write_grid_notes,
+    print_grid_dry_run,
+    coerce_cli_values,
+    parse_extra_params,
     extract_constants_from_subdir_name,
     extract_constant_from_profile,
     extract_mass,
@@ -36,37 +42,44 @@ def update_inlist(
     log_dir: str,
     resume: bool = False,
     tams_dir=None,
+    param_registry: Optional[dict] = None,
 ) -> str:
     """
     Substitute parameter values into a MESA inlist template, with optional resume support.
 
-    Handles keys: initial_mass, initial_y, initial_z, mixing_length_alpha.
-    When resume=True, also enables load_saved_model and sets load_model_filename to the
-    corresponding TAMS file; the output save file is named cont_<mass>.mod.
+    Handles every key in params that's also in param_registry (PARAM_FORMAT's
+    four built-in parameters by default, plus any extra parameters added via
+    --param). When resume=True, also enables load_saved_model and sets
+    load_model_filename to the corresponding TAMS file; the output save file
+    is named cont_<mass>.mod.
 
     Args:
         template_text: Raw text of the inlist_template file.
-        params: Parameter dict (keys as above).
+        params: Parameter dict (keys matching param_registry entries).
         log_dir: Unused; kept for API compatibility. log_directory is always set to 'DATA'.
         resume: If True, configure the inlist to load an existing TAMS model.
         tams_dir: Directory containing TAMS_<mass>.mod files (required when resume=True).
+        param_registry: Dict like PARAM_FORMAT (label/fmt/inlist_key per key).
+            Defaults to PARAM_FORMAT; pass an extended copy to substitute extra
+            (non-built-in) parameters too.
 
     Returns:
         Modified inlist text.
     """
+    registry = param_registry or PARAM_FORMAT
     for key, val in params.items():
-        if key not in PARAM_FORMAT:
+        if key not in registry:
             continue
-        inlist_key = PARAM_FORMAT[key]["inlist_key"]
-        fmt = PARAM_FORMAT[key]["fmt"]
+        inlist_key = registry[key]["inlist_key"]
+        fmt = registry[key]["fmt"]
         template_text = re.sub(
-            rf"{inlist_key}\s*=\s*[\d.eE+-]+",
+            rf"{re.escape(inlist_key)}\s*=\s*[\d.eEdD+-]+",
             f"{inlist_key} = {val:{fmt}}",
             template_text,
         )
         if key == "initial_z":
             template_text = re.sub(
-                r"Zbase\s*=\s*[\d.eE+-]+", f"Zbase = {val:{fmt}}", template_text
+                r"Zbase\s*=\s*[\d.eEdD+-]+", f"Zbase = {val:{fmt}}", template_text
             )
 
     template_text = re.sub(r"log_directory\s*=\s*'.*?'", "log_directory = 'DATA'", template_text)
@@ -182,16 +195,19 @@ def task_wrapper(args: tuple) -> None:
     Unpack args, write the inlist, and run a single MESA model (with optional resume).
 
     Args:
-        args: Tuple of (params, template_file, mesa_dir, resume, modifications, tag, param_formats).
+        args: Tuple of (params, template_file, mesa_dir, resume, modifications, tag,
+            param_formats, param_registry).
             modifications: list of callables ``f(inlist_text, params) -> inlist_text``
                 applied after the standard substitutions (used for resume edits).
             tag: optional string appended to the archived inlist filename.
             param_formats: per-key directory-naming format overrides (see
                 compute_param_formats).
+            param_registry: dict like PARAM_FORMAT (label/fmt/inlist_key per key);
+                defaults to PARAM_FORMAT if None.
     """
-    params, template_file, mesa_dir, resume, modifications, tag, param_formats = args
+    params, template_file, mesa_dir, resume, modifications, tag, param_formats, param_registry = args
 
-    log_dir_name = make_run_dir_name(params, param_formats)
+    log_dir_name = make_run_dir_name(params, param_formats, param_registry)
     run_dir = mesa_dir / log_dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -205,7 +221,8 @@ def task_wrapper(args: tuple) -> None:
     tams_dir = mesa_dir / "grid_TAMS"
 
     with open(template_file, "r") as f:
-        updated_text = update_inlist(f.read(), params, log_dir_name, resume=resume, tams_dir=tams_dir)
+        updated_text = update_inlist(f.read(), params, log_dir_name, resume=resume, tams_dir=tams_dir,
+                                       param_registry=param_registry)
 
     if resume and modifications:
         for modification in modifications:
@@ -231,6 +248,7 @@ def run_grid(
     max_workers: int = 2,
     resume: bool = False,
     resume_edit_path: str = None,
+    param_registry: Optional[dict] = None,
 ) -> None:
     """
     Build MESA, generate the parameter grid, and run all models in parallel.
@@ -248,6 +266,9 @@ def run_grid(
         max_workers: Parallel MESA processes. Use 1 for serial/debug mode.
         resume: Continue from existing TAMS models.
         resume_edit_path: Path to the resume edits script (required when resume=True).
+        param_registry: Dict like PARAM_FORMAT (label/fmt/inlist_key per key).
+            Defaults to PARAM_FORMAT; pass an extended copy to include extra
+            (non-built-in) parameters added via --param.
     """
     this_grid_dir = Path.cwd()
     print("Building MESA...", flush=True)
@@ -272,11 +293,14 @@ def run_grid(
     param_dicts = generate_grid(param_ranges, grid_type=grid_type, num_points=num_points)
     print(f"Running {len(param_dicts)} models.", flush=True)
 
-    param_formats = compute_param_formats(param_ranges, grid_type=grid_type, num_points=num_points)
-    write_grid_notes(param_ranges, param_formats, grid_type, num_points, this_grid_dir / "notes.txt")
+    param_formats = compute_param_formats(param_ranges, grid_type=grid_type, num_points=num_points,
+                                           param_registry=param_registry)
+    write_grid_notes(param_ranges, param_formats, grid_type, num_points, this_grid_dir / "notes.txt",
+                      param_registry=param_registry)
 
     args_list = [
-        (p, this_grid_dir / "inlist_template", this_grid_dir, resume, modifications, tag, param_formats)
+        (p, this_grid_dir / "inlist_template", this_grid_dir, resume, modifications, tag,
+         param_formats, param_registry)
         for p in param_dicts
     ]
 
@@ -290,12 +314,32 @@ def run_grid(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run a MESA continuation grid.")
-    parser.add_argument("--min_mass", type=float, default=0.7)
+    parser.add_argument("--min_mass", type=float, default=0.7,
+                        help="Used only if --mass is not given.")
     parser.add_argument("--max_mass", type=float, default=None,
-                        help="If omitted, runs a single model at min_mass.")
-    parser.add_argument("--initial_Z", type=float, default=0.02)
-    parser.add_argument("--initial_Y", type=float, default=0.27)
-    parser.add_argument("--alpha_MLT", type=float, default=2.0)
+                        help="If omitted (and --mass is not given), runs a single model "
+                             "at min_mass.")
+    parser.add_argument("--mass", type=str, nargs="+", default=None, metavar="SPEC",
+                        help="Initial mass spec, overriding --min_mass/--max_mass: "
+                             + VALUE_SPEC_HELP)
+    parser.add_argument("--initial_Z", type=str, nargs="+", default=["0.02"], metavar="SPEC",
+                        help="Initial metallicity spec: " + VALUE_SPEC_HELP)
+    parser.add_argument("--initial_Y", type=str, nargs="+", default=["0.27"], metavar="SPEC",
+                        help="Initial helium abundance spec: " + VALUE_SPEC_HELP)
+    parser.add_argument("--alpha_MLT", type=str, nargs="+", default=["2.0"], metavar="SPEC",
+                        help="Mixing-length alpha spec: " + VALUE_SPEC_HELP)
+    parser.add_argument("--param", action="append", default=[], metavar="KEY=SPEC",
+                        help="Extra inlist parameter to set or sweep, as KEY=SPEC where "
+                             "SPEC is: " + VALUE_SPEC_HELP + " KEY must match a parameter "
+                             "settable in inlist_template (case-insensitive); if it doesn't, "
+                             "an error lists close matches and all available parameters. "
+                             "Repeatable.")
+    parser.add_argument("--dry_run", action="store_true",
+                        help="Print the grid plan (parameters, model count, disk estimate, "
+                             "example filenames) and exit without building or running MESA.")
+    parser.add_argument("--avg_data_mb", type=float, default=20.0,
+                        help="Estimated MESA output size (MB) per model, for --dry_run's "
+                             "disk usage estimate (default: 20).")
     parser.add_argument("--grid_type", choices=["linear", "sobol"], default="linear")
     parser.add_argument("--num_points", type=int, default=8)
     parser.add_argument("--max_workers", type=int, default=1)
@@ -305,16 +349,32 @@ if __name__ == "__main__":
                         help="Path to a Python script defining resume_tag and modifications.")
     args = parser.parse_args()
 
-    if args.max_mass is None:
-        args.max_mass = args.min_mass
-        args.num_points = 1
+    if args.mass is not None:
+        initial_mass_spec = coerce_cli_values(args.mass)
+    else:
+        if args.max_mass is None:
+            args.max_mass = args.min_mass
+            args.num_points = 1
+        initial_mass_spec = (args.min_mass, args.max_mass)
 
     param_ranges = {
-        "initial_mass": (args.min_mass, args.max_mass),
-        "initial_y": args.initial_Y,
-        "initial_z": args.initial_Z,
-        "mixing_length_alpha": args.alpha_MLT,
+        "initial_mass": initial_mass_spec,
+        "initial_y": coerce_cli_values(args.initial_Y),
+        "initial_z": coerce_cli_values(args.initial_Z),
+        "mixing_length_alpha": coerce_cli_values(args.alpha_MLT),
     }
+
+    param_registry = dict(PARAM_FORMAT)
+    if args.param:
+        inlist_text = (Path.cwd() / "inlist_template").read_text()
+        extra_specs, extra_registry = parse_extra_params(args.param, inlist_text)
+        param_ranges.update(extra_specs)
+        param_registry.update(extra_registry)
+
+    if args.dry_run:
+        print_grid_dry_run(param_ranges, grid_type=args.grid_type, num_points=args.num_points,
+                            avg_data_mb=args.avg_data_mb, param_registry=param_registry)
+        sys.exit(0)
 
     run_grid(
         param_ranges=param_ranges,
@@ -323,5 +383,6 @@ if __name__ == "__main__":
         max_workers=args.max_workers,
         resume=args.resume,
         resume_edit_path=args.resume_edit_path,
+        param_registry=param_registry,
     )
     print(f"Done at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.")

@@ -1,10 +1,11 @@
 import argparse
 from pathlib import Path
 
-from .grid_utils import load_history_with_constants_from_profile
+from .grid_utils import load_history_with_constants_from_profile, cleanup_grid_data
 
 
-def main(parent_dir: Path, save_as_hdf5: bool, hdf5_filename: str, constant_columns: list):
+def main(parent_dir: Path, save_as_hdf5: bool, hdf5_filename: str, constant_columns: list,
+         cleanup: str = "none"):
     """
     Load MESA history files from a grid run directory and optionally save to HDF5.
 
@@ -14,6 +15,9 @@ def main(parent_dir: Path, save_as_hdf5: bool, hdf5_filename: str, constant_colu
         hdf5_filename: Output HDF5 filename (written into parent_dir).
         constant_columns: Parameter names to extract from subdirectory names
             and add as constant columns (e.g. ['M', 'Y', 'Z', 'alpha']).
+        cleanup: 'none', 'zip', or 'delete'. After a successful HDF5 save,
+            archive ('zip') or remove ('delete') each model's DATA/ folder
+            (see cleanup_grid_data). Only applies when save_as_hdf5 is True.
     """
     df = load_history_with_constants_from_profile(
         parent_dir=parent_dir,
@@ -24,6 +28,9 @@ def main(parent_dir: Path, save_as_hdf5: bool, hdf5_filename: str, constant_colu
     )
     print(f"Loaded {len(df)} preview rows.")
     print("Preview:\n", df.head())
+
+    if save_as_hdf5 and not df.empty:
+        cleanup_grid_data(parent_dir, cleanup)
 
 
 if __name__ == "__main__":
@@ -39,6 +46,12 @@ if __name__ == "__main__":
     parser.add_argument("--constants", nargs="*", default=["M", "Y", "Z", "alpha"],
                         help="Parameter keys to extract from subdirectory names "
                              "(default: M Y Z alpha).")
+    parser.add_argument("--cleanup", choices=["none", "zip", "delete"], default="none",
+                        help="After a successful --save, archive ('zip') or remove "
+                             "('delete') each model's DATA/ folder to save disk space. "
+                             "Refuses to run unless every model has a TAMS save file in "
+                             "grid_TAMS/ (i.e. all array jobs have finished). "
+                             "Default: 'none'.")
     args = parser.parse_args()
 
-    main(Path(args.parent_dir).expanduser(), args.save, args.hdf5_filename, args.constants)
+    main(Path(args.parent_dir).expanduser(), args.save, args.hdf5_filename, args.constants, args.cleanup)
