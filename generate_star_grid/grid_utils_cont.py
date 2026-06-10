@@ -19,6 +19,8 @@ from .grid_utils import (
     PARAM_FORMAT,
     make_run_dir_name,
     generate_grid,
+    compute_param_formats,
+    write_grid_notes,
     extract_constants_from_subdir_name,
     extract_constant_from_profile,
     extract_mass,
@@ -180,14 +182,16 @@ def task_wrapper(args: tuple) -> None:
     Unpack args, write the inlist, and run a single MESA model (with optional resume).
 
     Args:
-        args: Tuple of (params, template_file, mesa_dir, resume, modifications, tag).
+        args: Tuple of (params, template_file, mesa_dir, resume, modifications, tag, param_formats).
             modifications: list of callables ``f(inlist_text, params) -> inlist_text``
                 applied after the standard substitutions (used for resume edits).
             tag: optional string appended to the archived inlist filename.
+            param_formats: per-key directory-naming format overrides (see
+                compute_param_formats).
     """
-    params, template_file, mesa_dir, resume, modifications, tag = args
+    params, template_file, mesa_dir, resume, modifications, tag, param_formats = args
 
-    log_dir_name = make_run_dir_name(params)
+    log_dir_name = make_run_dir_name(params, param_formats)
     run_dir = mesa_dir / log_dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -268,8 +272,11 @@ def run_grid(
     param_dicts = generate_grid(param_ranges, grid_type=grid_type, num_points=num_points)
     print(f"Running {len(param_dicts)} models.", flush=True)
 
+    param_formats = compute_param_formats(param_ranges, grid_type=grid_type, num_points=num_points)
+    write_grid_notes(param_ranges, param_formats, grid_type, num_points, this_grid_dir / "notes.txt")
+
     args_list = [
-        (p, this_grid_dir / "inlist_template", this_grid_dir, resume, modifications, tag)
+        (p, this_grid_dir / "inlist_template", this_grid_dir, resume, modifications, tag, param_formats)
         for p in param_dicts
     ]
 

@@ -138,17 +138,34 @@ After all array tasks complete, each run directory will contain:
 
 ```
 my_grid_run/
-├── M_0.700000_Y_0.270_Z_0.0200_alpha_2.00/
+├── notes.txt                  # which params are constant/swept, spacing, formats used
+├── M_0.70_Y_0.27_Z_0.02_alpha_2.0/
 │   ├── DATA/
 │   │   └── history.data
 │   └── inlist_project
 ├── grid_TAMS/
 │   └── TAMS_0.700000.mod      # saved model at TAMS
 ├── grid_inlists/
-│   └── inlist_M_0.700000_...  # archived inlist for each run
+│   └── inlist_M_0.70_..._     # archived inlist for each run
 └── LOGS/
-    └── log_M_0.700000_..._TASK_0.txt
+    └── log_M_0.70_..._TASK_0.txt
 ```
+
+### Directory naming and `notes.txt`
+
+`M_<...>_Y_<...>_Z_<...>_alpha_<...>` directory names always include all four
+`PARAM_FORMAT` parameters (`initial_mass`, `initial_y`, `initial_z`,
+`mixing_length_alpha`) — `M` is always the model's *initial* mass, even though
+mass may decrease over the evolution due to mass loss in continuation runs.
+
+The number of decimal places used for each value is chosen automatically
+(`compute_param_formats`): for the swept parameter, the fewest decimals needed
+so every grid point gets a unique label given its spacing; for fixed
+parameters, the fewest decimals that represent the value exactly. A
+`notes.txt` file is written into the grid directory recording which
+parameters were held constant (and their values), which parameter(s) were
+swept (range, spacing, number of points), and the format used for each — so
+you don't have to reverse-engineer the precision later.
 
 ---
 
@@ -164,6 +181,12 @@ python -m generate_star_grid.make_grid \
     --hdf5_filename combined_history.hdf5 \
     --constants M Y Z alpha
 ```
+
+`--constants` is parsed from each model's directory name
+(`extract_constants_from_subdir_name`), which splits on `_` and reads
+alternating label/value tokens — this works regardless of how many decimal
+places `compute_param_formats` chose, so `combined_history.hdf5` reads the
+new dynamic-precision names without any changes.
 
 This writes `combined_history.hdf5` into the grid run directory, with one row
 per timestep and columns for all history quantities plus the requested constants.
@@ -198,9 +221,10 @@ From inside the grid run directory, run:
 bash /path/to/slurm/find_failed.sh
 ```
 
-Edit the `FIXED_Y`, `FIXED_Z`, `FIXED_ALPHA` variables at the top to match
-your grid's fixed parameters. Prints task IDs of failed/incomplete runs and
-a ready-to-use `sbatch --array=...` resubmit command.
+Prints task IDs of failed/incomplete runs and a ready-to-use
+`sbatch --array=...` resubmit command. Each task's run directory is located
+from its `M_<mass>` prefix (matching whatever precision was used by
+`compute_param_formats`), so no per-grid configuration is needed.
 
 To also clear corrupted `DATA/` folders before resubmitting:
 

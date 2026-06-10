@@ -23,7 +23,82 @@ PARAM_FORMAT = {
 }
 
 
-def make_run_dir_name(params: dict) -> str:
+def _min_decimals_for_value(value: float, min_decimals: int = 1, max_decimals: int = 10) -> int:
+    """
+    Smallest decimal count in [min_decimals, max_decimals] that represents
+    `value` exactly (i.e. rounding to that many decimals doesn't change it).
+
+    Falls back to max_decimals if no count in range represents it exactly.
+    """
+    for d in range(min_decimals, max_decimals + 1):
+        if round(value, d) == value:
+            return d
+    return max_decimals
+
+
+def _min_decimals_for_unique(values, min_decimals: int = 1, max_decimals: int = 10) -> int:
+    """
+    Smallest decimal count in [min_decimals, max_decimals] that gives every
+    value in `values` a distinct formatted string.
+
+    Falls back to max_decimals if no count in range disambiguates all values.
+    """
+    for d in range(min_decimals, max_decimals + 1):
+        if len({f"{v:.{d}f}" for v in values}) == len(values):
+            return d
+    return max_decimals
+
+
+def compute_param_formats(
+    param_specs: dict,
+    grid_type: str = "linear",
+    num_points: int = 8,
+    min_decimals: int = 1,
+    max_decimals: int = 10,
+) -> dict:
+    """
+    Choose the minimum decimal precision needed for each parameter's directory label.
+
+    For a swept parameter (a `(min, max)` tuple in param_specs), this is the
+    fewest decimals such that every grid value in that range produces a unique
+    formatted string, given the spacing implied by `num_points`. For a fixed
+    (scalar) parameter, it's the fewest decimals that represent its value exactly.
+
+    For 'sobol' grids the actual sampled values aren't reproducible across
+    processes (Sobol scrambling isn't seeded), so the same evenly-spaced
+    `num_points` values used for 'linear' grids are used here for format
+    selection only — this doesn't affect the actual sampled points, just how
+    many decimals are used to label them.
+
+    Args:
+        param_specs: Dict passed to generate_grid (scalars or (min, max) tuples).
+        grid_type: 'linear' or 'sobol'.
+        num_points: Points per swept dimension (linear) or total samples (sobol).
+        min_decimals: Smallest number of decimals to use for any parameter.
+        max_decimals: Largest number of decimals to consider before giving up.
+
+    Returns:
+        Dict mapping each PARAM_FORMAT key present in param_specs to a format
+        spec string (e.g. '.3f'), for use with make_run_dir_name.
+    """
+    formats = {}
+    for key, spec in param_specs.items():
+        if key not in PARAM_FORMAT:
+            continue
+        if isinstance(spec, tuple):
+            lo, hi = spec
+            if num_points <= 1 or lo == hi:
+                d = _min_decimals_for_value(lo, min_decimals, max_decimals)
+            else:
+                values = np.linspace(lo, hi, num_points)
+                d = _min_decimals_for_unique(values, min_decimals, max_decimals)
+        else:
+            d = _min_decimals_for_value(spec, min_decimals, max_decimals)
+        formats[key] = f".{d}f"
+    return formats
+
+
+def make_run_dir_name(params: dict, param_formats: Optional[dict] = None) -> str:
     """
     Build the run directory name from a parameter dict.
 
@@ -34,6 +109,9 @@ def make_run_dir_name(params: dict) -> str:
 
     Args:
         params: Parameter dict (keys matching PARAM_FORMAT entries).
+        param_formats: Optional per-key format overrides (e.g. from
+            compute_param_formats), falling back to PARAM_FORMAT's defaults
+            for any key not present.
 
     Returns:
         Directory name string, e.g. 'M_0.700000_Y_0.270_Z_0.0200_alpha_2.00'.
@@ -41,8 +119,71 @@ def make_run_dir_name(params: dict) -> str:
     parts = []
     for key, spec in PARAM_FORMAT.items():
         if key in params:
-            parts.append(f"{spec['label']}_{params[key]:{spec['fmt']}}")
+            fmt = (param_formats or {}).get(key, spec["fmt"])
+            parts.append(f"{spec['label']}_{params[key]:{fmt}}")
     return "_".join(parts)
+
+
+def write_grid_notes(
+    param_specs: dict,
+    param_formats: dict,
+    grid_type: str,
+    num_points: int,
+    out_path: Union[str, Path],
+) -> None:
+    """
+    Write a notes.txt summarizing a grid's constant and swept parameters.
+
+    Records, for each PARAM_FORMAT parameter: whether it's held constant or
+    swept over a range, its value(s), the spacing between grid points (for
+    swept parameters), and the directory-naming format chosen for it.
+
+    Args:
+        param_specs: Dict passed to generate_grid (scalars or (min, max) tuples).
+        param_formats: Dict from compute_param_formats mapping each key to a
+            format spec (e.g. '.3f').
+        grid_type: 'linear' or 'sobol'.
+        num_points: Points per swept dimension (linear) or total samples (sobol).
+        out_path: File path to write the notes to.
+    """
+    fixed = {k: v for k, v in param_specs.items() if k in PARAM_FORMAT and not isinstance(v, tuple)}
+    swept = {k: v for k, v in param_specs.items() if k in PARAM_FORMAT and isinstance(v, tuple)}
+
+    lines = [
+        f"Grid generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"Grid type: {grid_type}, num_points: {num_points}",
+        "",
+        "Constant parameters:",
+    ]
+    if not fixed:
+        lines.append("  (none)")
+    for key, val in fixed.items():
+        spec = PARAM_FORMAT[key]
+        fmt = param_formats.get(key, spec["fmt"])
+        lines.append(f"  {key} ({spec['label']}) = {val:{fmt}}")
+
+    lines.append("")
+    lines.append("Swept parameter(s):")
+    if not swept:
+        lines.append("  (none)")
+    for key, (lo, hi) in swept.items():
+        spec = PARAM_FORMAT[key]
+        fmt = param_formats.get(key, spec["fmt"])
+        line = f"  {key} ({spec['label']}): {lo} to {hi}, {num_points} points"
+        if num_points > 1 and lo != hi:
+            spacing = (hi - lo) / (num_points - 1)
+            line += f", spacing = {spacing:{fmt}}"
+        line += f", directory format = '{fmt}'"
+        lines.append(line)
+
+    lines.append("")
+    lines.append(
+        "Note: 'M' (initial_mass) in directory/file names is always the "
+        "*initial* mass at the start of the run, even though mass may "
+        "decrease over the evolution due to mass loss."
+    )
+
+    Path(out_path).write_text("\n".join(lines) + "\n")
 
 
 def extract_constants_from_subdir_name(name: str, keys: list) -> dict:
@@ -347,7 +488,8 @@ def update_inlist(template_text: str, params: dict, log_dir: str) -> str:
     return template_text
 
 
-def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: Path) -> None:
+def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: Path,
+                    param_formats: Optional[dict] = None) -> None:
     """
     Set up a run directory for a single MESA model and execute it.
 
@@ -360,8 +502,11 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
         mesa_dir: Root directory of the grid run (must contain rn, star, inlist, etc.).
         params: Parameter dict with keys initial_mass, initial_y, initial_z, mixing_length_alpha.
         log_path: File path where MESA stdout/stderr will be written.
+        param_formats: Optional per-key directory-naming format overrides (see
+            compute_param_formats). Does not affect the values written into the
+            inlist itself.
     """
-    log_dir_name = make_run_dir_name(params)
+    log_dir_name = make_run_dir_name(params, param_formats)
     run_dir = mesa_dir / log_dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "DATA").mkdir(exist_ok=True)
@@ -407,13 +552,13 @@ def task_wrapper(args: tuple) -> None:
     Unpack args and run a single MESA model; for use with ProcessPoolExecutor.
 
     Args:
-        args: Tuple of (params, template_file, mesa_dir).
+        args: Tuple of (params, template_file, mesa_dir, param_formats).
     """
-    params, template_file, mesa_dir = args
-    log_dir_name = make_run_dir_name(params)
+    params, template_file, mesa_dir, param_formats = args
+    log_dir_name = make_run_dir_name(params, param_formats)
     logs_dir = mesa_dir / "LOGS"
     logs_dir.mkdir(exist_ok=True)
-    run_mesa_model(template_file, mesa_dir, params, logs_dir / f"log_{log_dir_name}.txt")
+    run_mesa_model(template_file, mesa_dir, params, logs_dir / f"log_{log_dir_name}.txt", param_formats)
 
 
 def run_grid(
@@ -443,7 +588,10 @@ def run_grid(
     param_dicts = generate_grid(param_ranges, grid_type=grid_type, num_points=num_points)
     print(f"Running {len(param_dicts)} models.", flush=True)
 
-    args_list = [(p, this_grid_dir / "inlist_template", this_grid_dir) for p in param_dicts]
+    param_formats = compute_param_formats(param_ranges, grid_type=grid_type, num_points=num_points)
+    write_grid_notes(param_ranges, param_formats, grid_type, num_points, this_grid_dir / "notes.txt")
+
+    args_list = [(p, this_grid_dir / "inlist_template", this_grid_dir, param_formats) for p in param_dicts]
 
     if max_workers == 1:
         for a in args_list:
@@ -480,6 +628,7 @@ if __name__ == "__main__":
     }
 
     param_dicts = generate_grid(param_ranges, grid_type=args.grid_type, num_points=args.num_points)
+    param_formats = compute_param_formats(param_ranges, grid_type=args.grid_type, num_points=args.num_points)
 
     if args.task_id is not None:
         idx = args.task_id
@@ -493,12 +642,17 @@ if __name__ == "__main__":
         logs_dir = this_grid_dir / "LOGS"
         logs_dir.mkdir(exist_ok=True)
 
-        log_dir_name = make_run_dir_name(params) + f"_TASK_{idx}"
+        if idx == 0:
+            write_grid_notes(param_ranges, param_formats, args.grid_type, args.num_points,
+                              this_grid_dir / "notes.txt")
+
+        log_dir_name = make_run_dir_name(params, param_formats) + f"_TASK_{idx}"
         run_mesa_model(
             this_grid_dir / "inlist_template",
             this_grid_dir,
             params,
             logs_dir / f"log_{log_dir_name}.txt",
+            param_formats,
         )
 
     else:

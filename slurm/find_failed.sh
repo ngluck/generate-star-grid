@@ -1,11 +1,8 @@
 #!/bin/bash
 
-# --- CONFIGURATION: update to match your grid's fixed parameters ---
+# --- CONFIGURATION ---
 THRESHOLD=13       # minimum expected history.data size in MB
-FIXED_Y=0.270      # fixed initial_y used in this grid (used to reconstruct dir name)
-FIXED_Z=0.0200     # fixed initial_z used in this grid
-FIXED_ALPHA=2.00   # fixed mixing_length_alpha used in this grid
-# -------------------------------------------------------------------
+# ----------------------
 
 if [ "$1" == "clean" ]; then
     CLEANUP=true
@@ -25,10 +22,13 @@ echo "-----------------------------------------------"
 
 for logfile in LOGS/log_*_TASK_*.txt; do
     
-    # Extract task ID and reconstructed folder name
+    # Extract task ID and reconstructed folder name. mass_prefix is the exact
+    # 'M_<value>' string used in both the log filename and the run directory
+    # (same dynamic precision from compute_param_formats), so it alone
+    # identifies the directory regardless of the Y/Z/alpha precision used.
     task_id=$(echo "$logfile" | grep -oP 'TASK_\K[0-9]+')
     mass_prefix=$(echo "$logfile" | grep -oP 'log_M_\K[0-9.]+')
-    folder_name=$(ls -d M_${mass_prefix}*_Y_${FIXED_Y}_Z_${FIXED_Z}_alpha_${FIXED_ALPHA} 2>/dev/null | head -n 1)
+    folder_name=$(ls -d M_${mass_prefix}_* 2>/dev/null | head -n 1)
 
     if [[ -z "$folder_name" ]]; then
         echo "Task $task_id: Could not find a directory for Mass $mass_prefix"
