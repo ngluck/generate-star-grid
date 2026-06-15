@@ -3,7 +3,8 @@ from importlib.metadata import version as _version
 project = "generate-star-grid"
 copyright = "2026, Naomi Gluck"
 author = "Naomi Gluck"
-release = _version("generate-star-grid")
+#release = _version("generate-star-grid")
+release = '0.1.0'
 version = release
 
 extensions = [
@@ -20,4 +21,4 @@ source_suffix = {
 
 myst_heading_anchors = 3
 
-html_theme = "sphinx_rtd_theme"
+html_theme = "furo" #"sphinx_rtd_theme"
