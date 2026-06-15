@@ -6,6 +6,21 @@ build-backend = "setuptools.build_meta"
 name = "generate-star-grid"
 version = "0.1.0"
 description = "Tools for generating MESA stellar evolution grids on HPC clusters"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Naomi Gluck", email = "ngluckxx@gmail.com"},
+]
+keywords = ["mesa", "stellar-evolution", "astrophysics", "asteroseismology", "hpc"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Astronomy",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 requires-python = ">=3.9"
 dependencies = [
     "numpy",
@@ -13,6 +28,15 @@ dependencies = [
     "scipy",
     "tables",
 ]
+
+[project.optional-dependencies]
+docs = ["sphinx>=7", "myst-parser", "sphinx-rtd-theme"]
+
+[project.urls]
+Homepage = "https://github.com/ngluck/generate-star-grid"
+Repository = "https://github.com/ngluck/generate-star-grid"
+Documentation = "https://generate-star-grid.readthedocs.io"
+Issues = "https://github.com/ngluck/generate-star-grid/issues"
 
 [tool.setuptools.packages.find]
 include = ["generate_star_grid*"]

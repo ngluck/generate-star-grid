@@ -1,5 +1,8 @@
 # generate-star-grid
 
+[![PyPI version](https://img.shields.io/pypi/v/generate-star-grid.svg)](https://pypi.org/project/generate-star-grid/)
+[![Documentation Status](https://readthedocs.org/projects/generate-star-grid/badge/?version=latest)](https://generate-star-grid.readthedocs.io/en/latest/?badge=latest)
+
 Python tools for generating grids of MESA stellar evolutionary tracks and
 post-processing their output into HDF5 files for downstream ML pipelines.
 
@@ -23,6 +26,14 @@ SLURM job-array submission for HPC clusters.
 ---
 
 ## Installation
+
+### From PyPI
+
+```bash
+pip install generate-star-grid
+```
+
+### From source (development)
 
 Clone the repo and install in editable mode into your Python environment:
 
@@ -502,5 +513,28 @@ generate-star-grid/
 │   └── find_failed.sh               # detect and resubmit failed array tasks
 ├── examples/
 │   └── inlist_template      # reference MESA inlist template
+├── docs/                     # Sphinx sources for the ReadTheDocs site
+├── .readthedocs.yaml
+├── .github/workflows/publish.yml  # PyPI release workflow
+├── LICENSE
 └── pyproject.toml
 ```
+
+---
+
+## Releasing a new version
+
+Releases are published to PyPI automatically by
+`.github/workflows/publish.yml` whenever a `v*` tag is pushed:
+
+1. Bump `version` in `pyproject.toml`.
+2. Commit the change.
+3. Tag and push:
+
+```bash
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+This requires a one-time PyPI "trusted publisher" set up for this repository
+(see [pypi.org/manage/account/publishing](https://pypi.org/manage/account/publishing/)).

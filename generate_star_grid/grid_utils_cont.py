@@ -199,14 +199,13 @@ def task_wrapper(args: tuple) -> None:
 
     Args:
         args: Tuple of (params, template_file, mesa_dir, resume, modifications, tag,
-            param_formats, param_registry).
-            modifications: list of callables ``f(inlist_text, params) -> inlist_text``
-                applied after the standard substitutions (used for resume edits).
-            tag: optional string appended to the archived inlist filename.
-            param_formats: per-key directory-naming format overrides (see
-                compute_param_formats).
-            param_registry: dict like PARAM_FORMAT (label/fmt/inlist_key per key);
-                defaults to PARAM_FORMAT if None.
+            param_formats, param_registry). ``modifications`` is a list of callables
+            ``f(inlist_text, params) -> inlist_text`` applied after the standard
+            substitutions (used for resume edits). ``tag`` is an optional string
+            appended to the archived inlist filename. ``param_formats`` holds
+            per-key directory-naming format overrides (see ``compute_param_formats``).
+            ``param_registry`` is a dict like ``PARAM_FORMAT`` (label/fmt/inlist_key
+            per key); defaults to ``PARAM_FORMAT`` if None.
     """
     params, template_file, mesa_dir, resume, modifications, tag, param_formats, param_registry = args
 
@@ -258,9 +257,10 @@ def run_grid(
 
     Must be called from the grid run directory. When resume=True, a Python script
     at resume_edit_path is imported; it must define:
-      - ``resume_tag`` (str): appended to archived inlist filenames
-      - ``modifications`` (list of callables): each takes (inlist_text, params) and
-        returns modified inlist_text
+
+    - ``resume_tag`` (str): appended to archived inlist filenames
+    - ``modifications`` (list of callables): each takes (inlist_text, params) and
+      returns modified inlist_text
 
     Args:
         param_ranges: Parameter spec dict passed to generate_grid.

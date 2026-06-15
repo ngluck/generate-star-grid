@@ -529,11 +529,12 @@ def parse_param_value(spec_str: str) -> Union[float, tuple, list]:
     """
     Parse a value-spec string into a fixed float, (min, max) tuple, or list.
 
-    'VALUE'        -> float(VALUE)                  (constant)
-    'MIN:MAX'      -> (float(MIN), float(MAX))      (continuous sweep, uses --num_points/--grid_type)
-    'MIN:MAX:STEP' -> [v0, v1, ..., MAX]             (explicit values spaced by STEP,
-                                                       inclusive of both ends; see _expand_range)
-    'V1,V2,...'    -> [float(V1), float(V2), ...]   (explicit values)
+    - ``'VALUE'`` -> ``float(VALUE)`` (constant)
+    - ``'MIN:MAX'`` -> ``(float(MIN), float(MAX))`` (continuous sweep, uses
+      --num_points/--grid_type)
+    - ``'MIN:MAX:STEP'`` -> ``[v0, v1, ..., MAX]`` (explicit values spaced by
+      STEP, inclusive of both ends; see _expand_range)
+    - ``'V1,V2,...'`` -> ``[float(V1), float(V2), ...]`` (explicit values)
     """
     if ":" in spec_str:
         parts = spec_str.split(":")
@@ -585,7 +586,7 @@ def parse_extra_params(param_args: list, inlist_text: str) -> tuple:
 
 
 def extract_mass(subdir_name: str) -> float:
-    """Return the mass value encoded in a subdirectory name (e.g. 'M_1.114_...' → 1.114)."""
+    """Return the mass value encoded in a subdirectory name (e.g. ``M_1.114_...`` → 1.114)."""
     match = re.search(r"M_(\d+\.\d+)", subdir_name)
     return float(match.group(1)) if match else float("inf")
 

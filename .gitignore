@@ -6,6 +6,9 @@ dist/
 build/
 .eggs/
 
+# Docs
+docs/_build/
+
 # MESA output data
 *.data
 *.mod
