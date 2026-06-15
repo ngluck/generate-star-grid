@@ -71,7 +71,7 @@ Fortran namelist syntax; `grid_utils` substitutes values for:
 | `mixing_length_alpha = ...` | `--alpha_MLT` |
 | any other settable parameter | `--param KEY=SPEC` (repeatable) |
 | `log_directory = ...` | always set to `'DATA'` |
-| `save_model_filename = ...` | always set to `TAMS_<mass>.mod` |
+| `save_model_filename = ...` | always set to `TAMS_<run_dir_name>.mod`, matching the model's `M_.../` directory name |
 
 `--mass`, `--initial_Z`, `--initial_Y`, `--alpha_MLT`, and `--param KEY=SPEC`
 all accept the same value-spec grammar — see
@@ -250,8 +250,9 @@ Example directory/file names:
   M_0.7_Y_0.27_Z_0.014_alpha_2.0_overshoot_f1_0.01/
   M_1.0_Y_0.27_Z_0.014_alpha_2.0_overshoot_f1_0.01/
   M_1.2_Y_0.27_Z_0.020_alpha_2.0_overshoot_f1_0.02/
-  grid_TAMS/TAMS_0.700000.mod
+  grid_TAMS/TAMS_M_0.7_Y_0.27_Z_0.014_alpha_2.0_overshoot_f1_0.01.mod
   grid_inlists/inlist_M_0.7_Y_0.27_Z_0.014_alpha_2.0_overshoot_f1_0.01
+  grid_profiles/M_0.7_Y_0.27_Z_0.014_alpha_2.0_overshoot_f1_0.01/   (profile*.data, profiles.index, etc., if any were saved)
   LOGS/log_M_0.7_Y_0.27_Z_0.014_alpha_2.0_overshoot_f1_0.01_TASK_0.txt   (for SLURM array runs)
   notes.txt
 
@@ -273,21 +274,66 @@ of listing every value, e.g. `initial_mass (M): 27 value(s) = 0.7 to 2.0
 
 ## Output structure
 
-After all array tasks complete, each run directory will contain:
+### Before running
+
+A grid run directory starts out with just the setup files from
+[Setting up a grid run directory](#setting-up-a-grid-run-directory):
 
 ```
 my_grid_run/
-├── notes.txt                  # which params are constant/swept, spacing, formats used
-├── M_0.70_Y_0.27_Z_0.02_alpha_2.0/
+├── inlist_template
+├── inlist
+├── inlist_pgstar
+├── history_columns.list
+├── profile_columns.list
+├── rn
+├── star
+└── mk
+```
+
+### After running
+
+Once all array tasks complete, the pipeline has added one subdirectory per
+model plus four collection directories (new items marked `# NEW`):
+
+```
+my_grid_run/
+├── inlist_template
+├── inlist
+├── inlist_pgstar
+├── history_columns.list
+├── profile_columns.list
+├── rn
+├── star
+├── mk
+├── notes.txt                                  # NEW -- constant/swept params, spacing, formats used
+├── M_0.70_Y_0.27_Z_0.02_alpha_2.0/             # NEW -- one per model
 │   ├── DATA/
-│   │   └── history.data
+│   │   ├── history.data
+│   │   ├── profile1.data                      # if any profiles were saved (see grid_profiles/ below)
+│   │   ├── profile1.data.GYRE                 # if write_pulse_data_with_profile = .true.
+│   │   └── profiles.index
 │   └── inlist_project
-├── grid_TAMS/
-│   └── TAMS_0.700000.mod      # saved model at TAMS
-├── grid_inlists/
-│   └── inlist_M_0.70_..._     # archived inlist for each run
-└── LOGS/
-    └── log_M_0.70_..._TASK_0.txt
+├── M_1.20_Y_0.27_Z_0.02_alpha_2.0/             # NEW
+│   └── ...
+├── grid_TAMS/                                  # NEW -- saved model at TAMS, one per model
+│   ├── TAMS_M_0.70_Y_0.27_Z_0.02_alpha_2.0.mod
+│   └── TAMS_M_1.20_Y_0.27_Z_0.02_alpha_2.0.mod
+├── grid_inlists/                               # NEW -- archived inlist, one per model
+│   ├── inlist_M_0.70_Y_0.27_Z_0.02_alpha_2.0
+│   └── inlist_M_1.20_Y_0.27_Z_0.02_alpha_2.0
+├── grid_profiles/                              # NEW -- see "Saved profile files" below
+│   ├── M_0.70_Y_0.27_Z_0.02_alpha_2.0/
+│   │   ├── profile1.data
+│   │   ├── profile2.data
+│   │   ├── profile1.data.GYRE
+│   │   ├── profile2.data.GYRE
+│   │   └── profiles.index
+│   └── M_1.20_Y_0.27_Z_0.02_alpha_2.0/
+│       └── ...
+└── LOGS/                                       # NEW -- one log per array task
+    ├── log_M_0.70_Y_0.27_Z_0.02_alpha_2.0_TASK_0.txt
+    └── log_M_1.20_Y_0.27_Z_0.02_alpha_2.0_TASK_1.txt
 ```
 
 ### Directory naming and `notes.txt`
@@ -310,6 +356,26 @@ parameters were held constant (and their values), which parameter(s) were
 swept (range/values, spacing, number of points), and the format used for each
 — so you don't have to reverse-engineer the precision later. Long discrete
 lists are condensed to their endpoints and spacing, same as in `--dry_run`.
+
+### Saved profile files (`grid_profiles/`)
+
+If a model's `DATA/` ends up with any `profile*.data` files, `run_mesa_model`
+copies all of them — along with their matching `profile*.data.GYRE` pulse
+files (written when `write_pulse_data_with_profile = .true.`) and
+`profiles.index` — into `grid_profiles/<run_dir_name>/` after the run finishes.
+
+- With `profile_interval = -1` (the default in `examples/inlist_template`),
+  MESA still writes one profile at termination, so
+  `grid_profiles/<run_dir_name>/` ends up with a single `profile1.data` (+
+  `.GYRE` + `profiles.index`).
+- Set `profile_interval = N` (`N > 0`) in `&controls` to save a profile every
+  `N` steps; every resulting `profileK.data` (and its `.GYRE` companion) is
+  collected into the same `grid_profiles/<run_dir_name>/` directory, so models
+  with many saved profiles are handled the same way as models with just one.
+- These are *copies* — the originals stay in `DATA/` and are still archived or
+  removed by `--cleanup zip` / `--cleanup delete` (below).
+- If a model's run never wrote any profile files, no
+  `grid_profiles/<run_dir_name>/` subdirectory is created for it.
 
 ---
 

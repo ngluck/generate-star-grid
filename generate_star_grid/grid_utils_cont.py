@@ -30,6 +30,7 @@ from .grid_utils import (
     extract_constants_from_subdir_name,
     extract_constant_from_profile,
     extract_mass,
+    collect_profile_files,
     load_history_with_constants_from_profile,
     load_mesa_histories_from_subdirs,
 )
@@ -58,7 +59,7 @@ def update_inlist(
         params: Parameter dict (keys matching param_registry entries).
         log_dir: Unused; kept for API compatibility. log_directory is always set to 'DATA'.
         resume: If True, configure the inlist to load an existing TAMS model.
-        tams_dir: Directory containing TAMS_<mass>.mod files (required when resume=True).
+        tams_dir: Directory containing TAMS_<run_dir_name>.mod files (required when resume=True).
         param_registry: Dict like PARAM_FORMAT (label/fmt/inlist_key per key).
             Defaults to PARAM_FORMAT; pass an extended copy to substitute extra
             (non-built-in) parameters too.
@@ -84,7 +85,7 @@ def update_inlist(
 
     template_text = re.sub(r"log_directory\s*=\s*'.*?'", "log_directory = 'DATA'", template_text)
 
-    tams_fname = f"TAMS_{params['initial_mass']:.3f}.mod"
+    tams_fname = f"TAMS_{log_dir}.mod"
 
     if resume:
         if tams_dir is None:
@@ -148,7 +149,7 @@ def run_mesa_model(
         mesa_dir: Root grid directory (source of rn, star, inlist, etc.).
         params: Parameter dict (must include initial_mass).
         resume: If True, also copies the TAMS file into run_dir before running.
-        tams_dir: Directory containing TAMS_<mass>.mod files (required when resume=True).
+        tams_dir: Directory containing TAMS_<run_dir_name>.mod files (required when resume=True).
     """
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "DATA").mkdir(exist_ok=True)
@@ -163,7 +164,7 @@ def run_mesa_model(
     if resume:
         if tams_dir is None:
             raise ValueError("tams_dir is required when resume=True")
-        tams_fname = f"TAMS_{params['initial_mass']:.3f}.mod"
+        tams_fname = f"TAMS_{run_dir.name}.mod"
         tams_src = Path(tams_dir) / tams_fname
         if not tams_src.exists():
             raise FileNotFoundError(f"TAMS file not found: {tams_src}")
@@ -180,7 +181,7 @@ def run_mesa_model(
         except Exception as e:
             print(f"[ERROR] Unexpected error running MESA in {run_dir}: {e}")
 
-    out_fname = f"cont_{params['initial_mass']:.3f}.mod" if resume else f"TAMS_{params['initial_mass']:.3f}.mod"
+    out_fname = f"cont_{params['initial_mass']:.3f}.mod" if resume else f"TAMS_{run_dir.name}.mod"
     src = run_dir / out_fname
     dest_dir = mesa_dir / ("grid_CONT" if resume else "grid_TAMS")
     dest_dir.mkdir(exist_ok=True)
@@ -188,6 +189,8 @@ def run_mesa_model(
         shutil.move(str(src), str(dest_dir / out_fname))
     else:
         print(f"[WARNING] Expected output file not found: {src}")
+
+    collect_profile_files(run_dir, mesa_dir, run_dir.name)
 
 
 def task_wrapper(args: tuple) -> None:

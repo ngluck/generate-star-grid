@@ -369,9 +369,9 @@ def print_grid_dry_run(
     for i in sample_idxs:
         print(f"  {make_run_dir_name(param_dicts[i], param_formats, registry)}/")
     first_name = make_run_dir_name(param_dicts[0], param_formats, registry)
-    if "initial_mass" in param_dicts[0]:
-        print(f"  grid_TAMS/TAMS_{param_dicts[0]['initial_mass']:.6f}.mod")
+    print(f"  grid_TAMS/TAMS_{first_name}.mod")
     print(f"  grid_inlists/inlist_{first_name}")
+    print(f"  grid_profiles/{first_name}/   (profile*.data, profiles.index, etc., if any were saved)")
     print(f"  LOGS/log_{first_name}_TASK_0.txt   (for SLURM array runs)")
     print("  notes.txt")
 
@@ -861,12 +861,13 @@ def update_inlist(
     Handles every key in params that's also in param_registry (PARAM_FORMAT's
     four built-in parameters by default, plus any extra parameters added via
     --param). Also sets log_directory to 'DATA' and save_model_filename to
-    TAMS_<mass>.mod.
+    TAMS_<log_dir>.mod, matching the run directory name.
 
     Args:
         template_text: Raw text of the inlist_template file.
         params: Parameter dict (keys matching param_registry entries).
-        log_dir: Unused; kept for API compatibility. log_directory is always set to 'DATA'.
+        log_dir: Run directory name (from make_run_dir_name), used to name the
+            saved TAMS model file.
         param_registry: Dict like PARAM_FORMAT (label/fmt/inlist_key per key).
             Defaults to PARAM_FORMAT; pass an extended copy to substitute extra
             (non-built-in) parameters too.
@@ -893,13 +894,42 @@ def update_inlist(
 
     template_text = re.sub(r"log_directory\s*=\s*'.*?'", "log_directory = 'DATA'", template_text)
 
-    save_fname = f"TAMS_{params['initial_mass']:.6f}.mod"
+    save_fname = f"TAMS_{log_dir}.mod"
     template_text = re.sub(
         r"save_model_filename\s*=\s*['\"].*?\.mod['\"]",
         f"save_model_filename = '{save_fname}'",
         template_text,
     )
     return template_text
+
+
+def collect_profile_files(run_dir: Path, mesa_dir: Path, log_dir_name: str) -> None:
+    """
+    Copy MESA profile output from run_dir/DATA into grid_profiles/<log_dir_name>/.
+
+    Picks up every profile*.data file, its matching profile*.data.GYRE pulse
+    file (written when write_pulse_data_with_profile = .true.), and
+    profiles.index -- so models with multiple saved profiles (profile_interval
+    > 0) get all of them, not just the one at TAMS. No-op if no profile files
+    were written.
+
+    Args:
+        run_dir: The model's run directory (contains DATA/).
+        mesa_dir: Root grid directory (destination for grid_profiles/).
+        log_dir_name: Run directory name, used as the grid_profiles/ subdirectory.
+    """
+    data_dir = run_dir / "DATA"
+    profile_files = sorted(data_dir.glob("profile*.data*"))
+    index_file = data_dir / "profiles.index"
+    if index_file.exists():
+        profile_files.append(index_file)
+    if not profile_files:
+        return
+
+    profiles_out_dir = mesa_dir / "grid_profiles" / log_dir_name
+    profiles_out_dir.mkdir(parents=True, exist_ok=True)
+    for f in profile_files:
+        shutil.copy(f, profiles_out_dir / f.name)
 
 
 def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: Path,
@@ -909,7 +939,7 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
 
     Creates a subdirectory named by the parameter values under mesa_dir, writes
     the updated inlist, copies MESA runtime files, runs MESA, then archives the
-    output TAMS model and inlist.
+    output TAMS model, inlist, and any saved profiles (see collect_profile_files).
 
     Args:
         template_file: Path to the inlist_template file.
@@ -954,7 +984,7 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
         except Exception as e:
             print(f"Unexpected error running MESA in {run_dir}: {e}")
 
-    save_fname = f"TAMS_{params['initial_mass']:.6f}.mod"
+    save_fname = f"TAMS_{log_dir_name}.mod"
     src = run_dir / save_fname
     grid_tams = mesa_dir / "grid_TAMS"
     grid_tams.mkdir(exist_ok=True)
@@ -964,6 +994,8 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
     inlist_out_dir = mesa_dir / "grid_inlists"
     inlist_out_dir.mkdir(exist_ok=True)
     shutil.copy(inlist_path, inlist_out_dir / f"inlist_{log_dir_name}")
+
+    collect_profile_files(run_dir, mesa_dir, log_dir_name)
 
 
 def task_wrapper(args: tuple) -> None:
