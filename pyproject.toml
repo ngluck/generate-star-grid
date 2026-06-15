@@ -27,10 +27,13 @@ dependencies = [
     "pandas",
     "scipy",
     "tables",
+    "sphinx",
+    "furo",
+    "myst-parser",
 ]
 
 [project.optional-dependencies]
-docs = ["sphinx>=7", "myst-parser", "sphinx-rtd-theme"]
+docs = ["sphinx>=7", "myst-parser", "furo"]
 
 [project.urls]
 Homepage = "https://github.com/ngluck/generate-star-grid"
