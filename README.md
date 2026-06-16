@@ -4,7 +4,7 @@
 [![Documentation Status](https://readthedocs.org/projects/generate-star-grid/badge/?version=latest)](https://generate-star-grid.readthedocs.io/en/latest/?badge=latest)
 
 <p align="center">
-  <img src="docs/_static/circular_logo.svg" alt="generate-star-grid logo" width="600"/>
+  <img src="docs/_static/circular_logo.svg" alt="generate-star-grid logo" width="400"/>
 </p>
 
 Python tools for generating grids of MESA stellar evolutionary tracks and
