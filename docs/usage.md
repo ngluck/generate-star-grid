@@ -80,27 +80,22 @@ models are built, listing close matches and all available parameters.
 
 ## Running a Grid
 
-### SLURM Job Array (Recommended for Large Grids)
+### Dry Run: Preview a Grid Before Running
 
-Copy `slurm/generate_grid_week_array.sh` into the parent directory of your run,
-edit the configuration variables at the top, and submit:
-
-```bash
-sbatch generate_grid_week_array.sh
-```
-
-The `--array` index must match `--num_points` (array `0-N` for `N+1` points).
-
-Each array task runs one MESA model:
+Add `--dry_run` to any command to print a plan summary and exit without running any models.
+This is a good first step before committing to a full run:
 
 ```bash
 python -m generate_star_grid.grid_utils \
-    --min_mass 0.7 --max_mass 1.2 \
-    --grid_type linear --num_points 200 \
-    --task_id $SLURM_ARRAY_TASK_ID
+    --min_mass 0.7 --max_mass 1.2 --num_points 4 \
+    --initial_Z 0.014 0.02 \
+    --param 'overshoot_f(1)=0.01,0.02' \
+    --dry_run
 ```
 
 ### Local Parallel Run (Small Grids / Testing)
+
+For small grids or testing your setup before scaling up, run locally:
 
 ```bash
 cd my_grid_run/
@@ -123,16 +118,24 @@ python -m generate_star_grid.grid_utils \
     --task_id $SLURM_ARRAY_TASK_ID
 ```
 
-### Dry Run: Preview a Grid Before Running
+### SLURM Job Array (Recommended for Large Grids)
 
-Add `--dry_run` to any command to print a plan summary and exit without running any models:
+Copy `slurm/generate_grid_week_array.sh` into the parent directory of your run,
+edit the configuration variables at the top, and submit:
+
+```bash
+sbatch generate_grid_week_array.sh
+```
+
+The `--array` index must match `--num_points` (array `0-N` for `N+1` points).
+
+Each array task runs one MESA model:
 
 ```bash
 python -m generate_star_grid.grid_utils \
-    --min_mass 0.7 --max_mass 1.2 --num_points 4 \
-    --initial_Z 0.014 0.02 \
-    --param 'overshoot_f(1)=0.01,0.02' \
-    --dry_run
+    --min_mass 0.7 --max_mass 1.2 \
+    --grid_type linear --num_points 200 \
+    --task_id $SLURM_ARRAY_TASK_ID
 ```
 
 ## Continuation Runs (Post-MS Evolution)
