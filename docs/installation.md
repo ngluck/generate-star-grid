@@ -6,6 +6,7 @@
 - MESA r24.08.1 (or compatible) compiled and available in your run directory
 - Each grid run directory must contain the compiled MESA executables: `rn`, `star`, `mk`
 - Standard MESA support files: `inlist`, `inlist_pgstar`, `history_columns.list`, `profile_columns.list`
+- If you do not have MESA installed on your machine, see their [documentation](https://docs.mesastar.org/en/26.4.1/installation.html).
 
 ### Python
 - Python ≥ 3.9
