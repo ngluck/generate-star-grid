@@ -4,7 +4,7 @@
 
 ::::{tab-set}
 :::{tab-item} Before Running
-```
+```{code-block} text
 my_grid_run/
 ├── inlist_template
 ├── inlist
