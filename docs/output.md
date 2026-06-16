@@ -44,7 +44,7 @@ my_grid_run/
 ::::
 
 ```{note}
-Items highlighted in yellow are added by the pipeline after all array tasks complete.
+Items highlighted above are added by the pipeline after all array tasks complete.
 ```
 
 ## Directory Naming and `notes.txt`
