@@ -2,9 +2,9 @@
 
 ## Directory Layout
 
-`````{tab-set}
-````{tab-item} Before Running
-~~~
+::::{tab-set}
+:::{tab-item} Before Running
+```
 my_grid_run/
 ├── inlist_template
 ├── inlist
@@ -14,9 +14,9 @@ my_grid_run/
 ├── rn
 ├── star
 └── mk
-~~~
-````
-````{tab-item} After Running
+```
+:::
+:::{tab-item} After Running
 ```{code-block} text
 :emphasize-lines: 9,10,11,12,13,14,15,16,17,18,19,20,21,22
 my_grid_run/
@@ -40,12 +40,12 @@ my_grid_run/
 ├── grid_profiles/                             # copied profile files, one subdir per model
 └── LOGS/                                      # one log per array task
 ```
-````
-`````
+:::
+::::
 
-`````{note}
+```{note}
 Items highlighted in yellow are added by the pipeline after all array tasks complete.
-`````
+```
 
 ## Directory Naming and `notes.txt`
 
