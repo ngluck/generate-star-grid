@@ -3,7 +3,7 @@
 If you use generate-star-grid in your research, please cite it as:
 
 **BibTeX:**
-```bibtex
+```
 @software{gluck_generate_star_grid,
   author = {Gluck, Naomi},
   title  = {generate-star-grid},
