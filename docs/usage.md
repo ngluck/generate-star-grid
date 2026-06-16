@@ -119,8 +119,8 @@ python -m generate_star_grid.grid_utils \
     --dry_run
 ````
 
-````{dropdown} Example dry run output
-````
+```{dropdown} Example dry run output
+~~~
 ============================================================
 DRY RUN: grid plan (no MESA models will be built or run)
 ============================================================
@@ -156,7 +156,8 @@ Example directory/file names:
 SLURM array:
   --array=0-15
 ============================================================
-````
+~~~
+```
 
 The disk estimate uses `--avg_data_mb` (default 20 MB/model — override it for grids
 that run much longer or shorter than usual). For Sobol grids, this also warns if
