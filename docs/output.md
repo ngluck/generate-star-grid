@@ -1,10 +1,10 @@
 # Output Structure
 
-## Before Running
+## Directory Layout
 
-A grid run directory starts out with just the setup files:
-
-```
+`````{tab-set}
+````{tab-item} Before Running
+~~~
 my_grid_run/
 ├── inlist_template
 ├── inlist
@@ -14,14 +14,11 @@ my_grid_run/
 ├── rn
 ├── star
 └── mk
-```
-
-## After Running
-
-Once all array tasks complete, the pipeline adds one subdirectory per model
-plus four collection directories:
-
-```
+~~~
+````
+````{tab-item} After Running
+```{code-block} text
+:emphasize-lines: 9,10,11,12,13,14,15,16,17,18,19,20,21,22
 my_grid_run/
 ├── inlist_template
 ├── inlist
@@ -29,7 +26,6 @@ my_grid_run/
 ├── history_columns.list
 ├── profile_columns.list
 ├── rn
-├── star
 ├── mk
 ├── notes.txt                                  # constant/swept params, spacing, formats used
 ├── M_0.70_Y_0.27_Z_0.02_alpha_2.0/           # one per model
@@ -44,6 +40,12 @@ my_grid_run/
 ├── grid_profiles/                             # copied profile files, one subdir per model
 └── LOGS/                                      # one log per array task
 ```
+````
+`````
+
+`````{note}
+Items highlighted in yellow are added by the pipeline after all array tasks complete.
+`````
 
 ## Directory Naming and `notes.txt`
 
