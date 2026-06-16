@@ -18,7 +18,7 @@ my_grid_run/
 :::
 :::{tab-item} After Running
 ```{code-block} text
-:emphasize-lines: 9,10,11,12,13,14,15,16,17,18,19,20,21,22
+:emphasize-lines: 9,10,11,12,13,14,15,16,17,18,19,20
 my_grid_run/
 ├── inlist_template
 ├── inlist

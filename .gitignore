@@ -24,6 +24,7 @@ LOGS/
 slurm_logs/
 slurm-*.out
 *.txt
+!docs/requirements.txt
 
 # MESA binary / compiled files
 star
