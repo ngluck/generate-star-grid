@@ -13,6 +13,7 @@ extensions = [
     "sphinx.ext.viewcode",
     "myst_parser",
     "sphinx_design",
+    "sphinx_copybutton",
 ]
 
 myst_enable_extensions = [
