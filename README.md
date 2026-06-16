@@ -52,3 +52,18 @@ pip install -e /path/to/generate-star-grid
 ```
 
 You only need to do this once per environment. After that, `python -m generate_star_grid.grid_utils` works from any directory.
+
+---
+
+## Quick Start
+
+```bash
+cd my_grid_run/
+python -m generate_star_grid.grid_utils \
+    --min_mass 0.9 --max_mass 1.1 \
+    --grid_type linear --num_points 8 \
+    --max_workers 4
+```
+
+Add `--dry_run` to any of the commands above to print a plan summary and
+exit without building MESA or running any models
