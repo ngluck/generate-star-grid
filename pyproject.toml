@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-docs = ["sphinx>=7", "myst-parser", "furo"]
+docs = ["sphinx>=7", "myst-parser", "furo", "sphinx-design"]
 
 [project.urls]
 Homepage = "https://github.com/ngluck/generate-star-grid"
