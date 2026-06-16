@@ -17,7 +17,7 @@ my_grid_run/
 ````
 
 ````{tip}
-See [examples/inlist_template](https://github.com/ngluck/generate-star-grid/blob/main/examples/inlist_template) for a reference inlist.
+See ['examples/inlist_template'](https://github.com/ngluck/generate-star-grid/blob/main/examples/inlist_template) for a reference inlist.
 ````
 
 The template uses standard Fortran namelist syntax; `grid_utils` substitutes values for:
@@ -198,7 +198,8 @@ If `--num_points` is not a power of 2, the dry run will warn you before any mode
 
 ### SLURM Job Array (Recommended for Large Grids)
 
-Copy `slurm/generate_grid_week_array.sh` into the parent directory of your run,
+Copy [`slurm/generate_grid_week_array.sh`](https://github.com/ngluck/generate-star-grid/blob/main/slurm/generate_grid_week_array.sh) 
+into the parent directory of your run,
 edit the configuration variables at the top, and submit:
 
 ````{tab-set}
