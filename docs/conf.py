@@ -29,7 +29,7 @@ myst_heading_anchors = 3
 
 html_theme = "furo" #"sphinx_rtd_theme"
 
-html_logo = "_static/gen-star-logo.png"
+html_logo = "_static/circular_logo.png"
 
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
