@@ -15,6 +15,10 @@ extensions = [
     "sphinx_design",
 ]
 
+myst_enable_extensions = [
+    "colon_fence",
+]
+
 source_suffix = {
     ".rst": "restructuredtext",
     ".md": "markdown",
