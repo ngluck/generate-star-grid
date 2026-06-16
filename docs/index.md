@@ -35,4 +35,5 @@ postprocessing
 
 contributing
 api
+citing
 ```

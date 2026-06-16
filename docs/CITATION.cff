@@ -1,0 +1,7 @@
+cff-version: 1.2.0
+title: generate-star-grid
+authors:
+  - family-names: Gluck
+    given-names: Naomi
+repository-code: https://github.com/ngluck/generate-star-grid
+type: software
