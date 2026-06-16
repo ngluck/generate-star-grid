@@ -3,6 +3,10 @@
 [![PyPI version](https://img.shields.io/pypi/v/generate-star-grid.svg)](https://pypi.org/project/generate-star-grid/)
 [![Documentation Status](https://readthedocs.org/projects/generate-star-grid/badge/?version=latest)](https://generate-star-grid.readthedocs.io/en/latest/?badge=latest)
 
+<p align="center">
+  <img src="docs/_static/circular_logo.svg" alt="generate-star-grid logo" width="600"/>
+</p>
+
 Python tools for generating grids of MESA stellar evolutionary tracks and
 post-processing their output into HDF5 files for downstream ML pipelines.
 
