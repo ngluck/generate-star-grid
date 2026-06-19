@@ -12,7 +12,9 @@ post-processing their output into HDF5 files for downstream ML pipelines.
 
 Supports linear and Sobol-sampled grids over any combination of MESA parameters
 (initial mass, metallicity Z, helium abundance Y, mixing-length α, etc.) with
-SLURM job-array submission for HPC clusters.
+SLURM job-array submission for HPC clusters. For grids too large to keep on disk
+all at once, `submit_grid.py` chains disk-bounded SLURM batches over any outer/
+inner parameter split, with automatic once-only retry of failed tasks.
 
 ---
 

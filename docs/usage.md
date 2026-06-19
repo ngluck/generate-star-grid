@@ -225,6 +225,42 @@ python -m generate_star_grid.grid_utils \
 The `--array` index must match `--num_points` (array `0-N` for `N+1` points).
 ````
 
+### Multi-Batch Grids (Recommended When the Full Grid Won't Fit on Disk)
+
+For grids too large to keep on disk all at once (e.g. 500 masses × 10 metallicities),
+`submit_grid.py` splits the sweep into an **outer** parameter (processed sequentially,
+one disk-bounded batch at a time) and an **inner** parameter (swept within each
+batch's SLURM array). Each batch: copies the template directory, submits the array job,
+then submits a combine/cleanup job that builds that batch's `combined_history.hdf5`,
+retries any failed tasks once (see below), deletes the batch's run artifacts, and only
+then triggers the next outer batch — so peak disk usage is bounded by a single batch's
+footprint, not the whole grid's.
+
+`--outer` and `--inner` both accept repeatable `KEY=SPEC` arguments, using the same
+grammar as `--param` (built-in aliases `mass`/`y`/`z`/`alpha`, or any other
+`inlist_template` parameter):
+
+````bash
+python -m generate_star_grid.submit_grid start \
+    --source_dir /path/to/clean/template_dir \
+    --queue_file /path/to/queue.json \
+    --outer 'initial_z=0.001,0.0015,0.0023,...,0.04' \
+    --inner mass=0.7:1.2 --grid_type linear --num_points 500
+````
+
+````{tip}
+Add `--dry_run` to preview the batch count, models-per-batch, and example batch
+directory names without writing the queue file or submitting anything.
+````
+
+This submits the first batch and writes `queue.json`, which tracks the remaining
+outer batches and all per-batch configuration (SLURM resources, conda env, retry
+settings, etc. — see `submit_grid start --help` for the full list of overridable
+flags). Each batch's combine/cleanup job calls `submit_grid next --queue_file ...`
+itself once it actually finishes, rather than via a pre-declared SLURM dependency —
+this is what lets a failed-task retry happen first without losing track of when the
+batch is really done.
+
 ## Continuation Runs (Post-MS Evolution)
 
 To resume from TAMS save files and continue evolution:
@@ -259,9 +295,22 @@ bash /path/to/slurm/find_failed.sh
 ```{tab-item} Check and clean corrupted DATA/
 bash /path/to/slurm/find_failed.sh clean
 ```
+```{tab-item} Any swept parameters
+python -m generate_star_grid.submit_grid check-failed \
+    --dest /path/to/grid_run --keys M,Y,Z,alpha
+```
 ````
 
 ````{warning}
 Cleaning corrupted `DATA/` folders with `clean` is irreversible. Always review the
 list of failed tasks before resubmitting.
 ````
+
+`find_failed.sh` hardcodes a single Y/Z/alpha combination in its model-directory
+naming guess, so it only works for single-batch grids swept over mass alone. For
+grids with other or multiple swept parameters, use `submit_grid check-failed`
+(backed by `find_failed_tasks()` in `grid_utils.py`), which reconstructs each
+task's model directory name directly from its `LOGS/log_..._TASK_<id>.txt`
+filename instead of assuming a fixed naming pattern. This is also what each
+`submit_grid`-managed batch's combine/cleanup job uses internally to retry failed
+tasks once before finalizing.

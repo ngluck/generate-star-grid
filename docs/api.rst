@@ -48,3 +48,11 @@ make_yrec_grid
    :members:
    :undoc-members:
    :show-inheritance:
+
+submit_grid
+-----------
+
+.. automodule:: generate_star_grid.submit_grid
+   :members:
+   :undoc-members:
+   :show-inheritance:
