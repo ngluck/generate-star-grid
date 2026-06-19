@@ -741,6 +741,52 @@ def load_mesa_histories_from_subdirs(
     return full_df
 
 
+def find_failed_tasks(
+    dest: Union[str, Path], keys: list, threshold_mb: float = 13.0
+) -> list:
+    """
+    Find SLURM array tasks whose MESA run didn't produce a usable history.data.
+
+    Generalizes the old slurm/find_failed.sh (which hardcoded a single Y/Z/alpha
+    combination) to any grid: it reconstructs each task's model directory name
+    directly from its LOGS/log_..._TASK_<id>.txt filename (stripping the
+    'log_' prefix, '.txt' suffix, and '_TASK_<id>' suffix), so it works
+    regardless of which parameters were swept or what values they took.
+
+    A task is considered failed if its DATA/history.data is missing or
+    smaller than threshold_mb.
+
+    Args:
+        dest: Grid run directory containing LOGS/ and the model subdirectories.
+        keys: Parameter labels to extract from each failed model's directory
+            name (e.g. ['M', 'Y', 'Z', 'alpha'], or labels for any extra
+            --param parameters), via extract_constants_from_subdir_name.
+        threshold_mb: Minimum acceptable history.data size, in MB.
+
+    Returns:
+        List of dicts, one per failed task, each with keys 'task_id' (int),
+        'folder' (str, the model subdirectory name), and 'params' (dict of
+        the requested keys extracted from the folder name).
+    """
+    dest = Path(dest)
+    failed = []
+    for log in sorted(dest.glob("LOGS/log_*_TASK_*.txt")):
+        match = re.search(r"_TASK_(\d+)$", log.stem)
+        if not match:
+            continue
+        task_id = int(match.group(1))
+        folder_name = re.sub(r"^log_", "", log.stem)
+        folder_name = re.sub(r"_TASK_\d+$", "", folder_name)
+        history_file = dest / folder_name / "DATA" / "history.data"
+
+        ok = history_file.exists() and history_file.stat().st_size >= threshold_mb * 1024 * 1024
+        if not ok:
+            params = extract_constants_from_subdir_name(folder_name, keys)
+            failed.append({"task_id": task_id, "folder": folder_name, "params": params})
+
+    return failed
+
+
 def cleanup_grid_data(parent_dir: Union[str, Path], mode: str = "none") -> None:
     """
     Remove or archive each model's DATA/ folder after combined_history.hdf5 is built.
