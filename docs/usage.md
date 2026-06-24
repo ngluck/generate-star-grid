@@ -236,6 +236,23 @@ retries any failed tasks once (see below), deletes the batch's run artifacts, an
 then triggers the next outer batch — so peak disk usage is bounded by a single batch's
 footprint, not the whole grid's.
 
+````{note}
+Each batch's `combined_history.hdf5` gets a constant column for both its inner
+key (e.g. `M`) and every outer key fixed for that batch (e.g. `Z`) — both are
+present in each per-star subdirectory's name (e.g.
+`M_0.700_Y_0.27_Z_0.000379_alpha_2.0`), so both are extracted.
+````
+
+````{tip}
+If the environment variable `SEISTRON_BASE_DIR` is set, each combine job also
+plots a quick HR diagram (evenly spaced tracks colored by mass) into the batch
+directory next to `combined_history.hdf5`, via a sibling project's
+`my_library.grid_builders.plot_grid_hr_diagram` module, as a visual sanity
+check that the grid looks as expected. This step is entirely optional: it's
+skipped with a one-line message if the variable isn't set, and a plotting
+failure only logs a warning rather than failing the combine/cleanup job.
+````
+
 `--outer` and `--inner` both accept repeatable `KEY=SPEC` arguments, using the same
 grammar as `--param` (built-in aliases `mass`/`y`/`z`/`alpha`, or any other
 `inlist_template` parameter):
