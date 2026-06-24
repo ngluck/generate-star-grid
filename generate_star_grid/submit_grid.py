@@ -109,9 +109,29 @@ def _label_for_key(internal_key: str, registry: dict) -> str:
     return registry[internal_key]["label"]
 
 
+def _trim_trailing_zeros(value: float, fmt: str) -> str:
+    """
+    Format value with fmt, then strip cosmetic trailing zeros (and a bare
+    trailing '.'). Batch directory names replace '.' with 'p' right after
+    this, so 'p' should read as a clean decimal point -- not be followed by
+    zero-padding left over from a fixed-width format chosen to fit other
+    values in the same outer sweep.
+    """
+    s = f"{value:{fmt}}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+        if not s or s == "-":
+            s = "0"
+    return s
+
+
 def _dest_name_for_batch(source_dir: Path, batch: dict, formats: dict, registry: dict) -> str:
     base = re.sub(r"_var[A-Za-z]*$", "", source_dir.name, flags=re.IGNORECASE)
-    label = make_run_dir_name(batch, formats, registry)
+    parts = []
+    for key, value in batch.items():
+        fmt = formats.get(key, registry[key]["fmt"])
+        parts.append(f"{registry[key]['label']}_{_trim_trailing_zeros(value, fmt)}")
+    label = "_".join(parts)
     return f"{base}_{label.replace('.', 'p')}"
 
 
@@ -257,6 +277,12 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_TH
     run_array.chmod(0o755)
 
     inner_keys_csv = ",".join(_label_for_key(k, registry) for k in config["inner_keys"])
+    # --constants must also include the outer keys fixed for this batch (e.g. Z) --
+    # they're embedded in every per-star subdir name alongside the inner keys, but
+    # aren't varying *within* this array, so they're absent from inner_keys.
+    constants_keys_csv = ",".join(
+        _label_for_key(k, registry) for k in list(config["inner_keys"]) + list(batch.keys())
+    )
     run_combine = dest / "run_combine_cleanup.sh"
     run_combine.write_text(f"""#!/bin/bash
 #SBATCH --job-name=combine_{job_label}
@@ -307,7 +333,7 @@ fi
 echo "Building combined_history.hdf5..."
 "{python}" -m generate_star_grid.make_grid \\
     --parent_dir "$DEST" \\
-    --constants {inner_keys_csv} \\
+    --constants {constants_keys_csv} \\
     --save
 
 if [ -n "$FAILED" ]; then
@@ -318,6 +344,14 @@ if [ -n "$FAILED" ]; then
             echo "  TASK_$tid ($folder): $params"
         done
     }} >> "$DEST/notes.txt"
+fi
+
+if [ -n "$SEISTRON_BASE_DIR" ]; then
+    echo "Plotting HR diagram..."
+    PYTHONPATH="$SEISTRON_BASE_DIR:$PYTHONPATH" "{python}" -m my_library.grid_builders.plot_grid_hr_diagram \\
+        --combined_history "$DEST/combined_history.hdf5" || echo "WARNING: HR diagram plotting failed; continuing."
+else
+    echo "SEISTRON_BASE_DIR not set; skipping optional HR diagram plot."
 fi
 
 echo "Deleting run directories and artifacts..."
