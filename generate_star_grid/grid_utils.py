@@ -47,6 +47,20 @@ def _min_decimals_for_value(value: float, min_decimals: int = 1, max_decimals: i
     return max_decimals
 
 
+def _exact_fmt(val: float, default_fmt: str, max_decimals: int = 10) -> str:
+    """
+    Format spec at least as precise as `default_fmt` that represents `val` exactly.
+
+    Prevents silently truncating values that need more decimals than a
+    registry's default format provides -- e.g. an initial_z of 0.000379 would
+    round to 0.0004 under '.4f', which is wrong for the actual MESA run, not
+    just a cosmetic label issue.
+    """
+    default_decimals = int(default_fmt.rstrip("f").lstrip("."))
+    decimals = max(default_decimals, _min_decimals_for_value(val, default_decimals, max_decimals))
+    return f".{decimals}f"
+
+
 def _min_decimals_for_unique(values, min_decimals: int = 1, max_decimals: int = 10) -> int:
     """
     Smallest decimal count in [min_decimals, max_decimals] that gives every
@@ -910,6 +924,14 @@ def update_inlist(
     --param). Also sets log_directory to 'DATA' and save_model_filename to
     TAMS_<log_dir>.mod, matching the run directory name.
 
+    Each value is written with at least as many decimals as param_registry's
+    default fmt, and more if needed to represent the value exactly (see
+    _exact_fmt) -- e.g. an initial_z of 0.000379 is written in full rather
+    than rounded to 0.0004 under the registry's '.4f' default. This is
+    independent of any directory-naming param_formats (see compute_param_formats),
+    which may use fewer decimals than needed for exactness, e.g. only enough
+    to keep sibling directory names distinct.
+
     Args:
         template_text: Raw text of the inlist_template file.
         params: Parameter dict (keys matching param_registry entries).
@@ -927,7 +949,7 @@ def update_inlist(
         if key not in registry:
             continue
         inlist_key = registry[key]["inlist_key"]
-        fmt = registry[key]["fmt"]
+        fmt = _exact_fmt(val, registry[key]["fmt"])
         template_text = re.sub(
             rf"{re.escape(inlist_key)}\s*=\s*[\d.eEdD+-]+",
             f"{inlist_key} = {val:{fmt}}",
@@ -996,8 +1018,9 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
             any extra parameters added via --param).
         log_path: File path where MESA stdout/stderr will be written.
         param_formats: Optional per-key directory-naming format overrides (see
-            compute_param_formats). Does not affect the values written into the
-            inlist itself.
+            compute_param_formats). Only affects the run directory name;
+            update_inlist always writes each value with enough decimals to
+            represent it exactly, regardless of this argument.
         param_registry: Dict like PARAM_FORMAT (label/fmt/inlist_key per key).
             Defaults to PARAM_FORMAT; pass an extended copy to include extra
             (non-built-in) parameters.

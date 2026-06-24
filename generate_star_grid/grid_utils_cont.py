@@ -23,6 +23,7 @@ from .grid_utils import (
     make_run_dir_name,
     generate_grid,
     compute_param_formats,
+    _exact_fmt,
     write_grid_notes,
     print_grid_dry_run,
     coerce_cli_values,
@@ -72,7 +73,7 @@ def update_inlist(
         if key not in registry:
             continue
         inlist_key = registry[key]["inlist_key"]
-        fmt = registry[key]["fmt"]
+        fmt = _exact_fmt(val, registry[key]["fmt"])
         template_text = re.sub(
             rf"{re.escape(inlist_key)}\s*=\s*[\d.eEdD+-]+",
             f"{inlist_key} = {val:{fmt}}",
