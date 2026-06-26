@@ -464,6 +464,132 @@ echo "Merge complete."
     print(f"Submitted merge job {merge_job} ({run_merge})")
 
 
+def _is_covered(batch: dict, covered_combos: list, tol: float = 1e-9) -> bool:
+    """Return True if batch matches any entry in covered_combos within tolerance."""
+    for covered in covered_combos:
+        if all(
+            key in covered and abs(batch[key] - covered[key]) <= tol * max(abs(batch[key]), abs(covered[key]), 1.0)
+            for key in batch
+        ):
+            return True
+    return False
+
+
+def cmd_expand(args):
+    """
+    Submit only the outer batches missing from an existing merged grid.
+
+    Reads per-batch notes.txt files inside --base_dir to determine which
+    outer-param combinations are already covered, then submits only the
+    missing ones from the full desired outer spec.
+    """
+    from .grid_inventory import parse_notes_txt
+
+    base_dir = Path(args.base_dir).resolve()
+    source_dir = Path(args.source_dir).resolve()
+
+    if not base_dir.is_dir():
+        sys.exit(f"Error: --base_dir {base_dir} does not exist.")
+    if not (base_dir / "combined_history.hdf5").exists():
+        sys.exit(f"Error: {base_dir} has no combined_history.hdf5 — is it a merged grid dir?")
+
+    inlist_text = (source_dir / "inlist_template").read_text()
+
+    outer_specs, outer_extra = _parse_named_params(args.outer, inlist_text)
+    inner_specs, inner_extra = _parse_named_params(args.inner, inlist_text)
+    registry = dict(PARAM_FORMAT)
+    registry.update(outer_extra)
+    registry.update(inner_extra)
+
+    outer_formats = compute_param_formats(
+        outer_specs, grid_type=args.outer_grid_type, num_points=args.outer_num_points, param_registry=registry
+    )
+    all_batches = generate_grid(outer_specs, grid_type=args.outer_grid_type, num_points=args.outer_num_points)
+
+    # Build label -> internal_key reverse map for notes.txt parsing
+    label_to_key = {v["label"]: k for k, v in registry.items()}
+
+    # Read covered combinations from per-batch notes.txt files inside base_dir
+    covered_combos = []
+    for subdir in sorted(base_dir.iterdir()):
+        notes_path = subdir / "notes.txt"
+        if not notes_path.exists():
+            continue
+        parsed = parse_notes_txt(notes_path)
+        combo = {
+            label_to_key[label]: val
+            for label, val in parsed["constants"].items()
+            if label in label_to_key
+        }
+        if combo:
+            covered_combos.append(combo)
+
+    missing_batches = [b for b in all_batches if not _is_covered(b, covered_combos)]
+    n_covered = len(all_batches) - len(missing_batches)
+
+    print(f"Desired outer batches: {len(all_batches)}")
+    print(f"Already covered:       {n_covered}")
+    print(f"Missing (to submit):   {len(missing_batches)}")
+
+    if missing_batches:
+        print("\nMissing batches:")
+        for b in missing_batches:
+            print(f"  {_dest_name_for_batch_v2(source_dir, b, outer_formats, registry)}/")
+
+    if args.dry_run:
+        print("\n--dry_run: queue file not written, no jobs submitted.")
+        return
+
+    if not missing_batches:
+        print("Nothing to submit — grid is already complete.")
+        return
+
+    inner_cli_args = []
+    for item in args.inner:
+        key_str, spec_str = item.split("=", 1)
+        internal_key, _ = _resolve_key(key_str, inlist_text)
+        if internal_key in _BUILTIN_CLI_FLAG:
+            inner_cli_args += [_BUILTIN_CLI_FLAG[internal_key], spec_str.strip()]
+        else:
+            inner_cli_args += ["--param", f"{internal_key}={spec_str.strip()}"]
+    inner_cli_args += ["--grid_type", args.grid_type, "--num_points", str(args.num_points)]
+
+    inner_keys = [_resolve_key(item.split("=", 1)[0], inlist_text)[0] for item in args.inner]
+
+    config = {
+        "source_dir": str(source_dir),
+        "parent_dir": str(base_dir.parent),
+        "expand_base_dir": str(base_dir),
+        "registry": registry,
+        "outer_formats": outer_formats,
+        "inner_cli_args": inner_cli_args,
+        "inner_keys": inner_keys,
+        "python": args.python,
+        "conda_env": args.conda_env,
+        "array_time": args.array_time,
+        "array_mem": args.array_mem,
+        "array_partition": args.array_partition,
+        "array_mail_type": args.array_mail_type,
+        "combine_time": args.combine_time,
+        "combine_mem": args.combine_mem,
+        "combine_partition": args.combine_partition,
+        "combine_mail_type": args.combine_mail_type,
+        "retry_once": not args.no_retry,
+        "fail_threshold_mb": args.fail_threshold_mb,
+        "merge_after": not args.no_merge_after,
+        "merge_time": args.merge_time,
+        "merge_mem": args.merge_mem,
+        "merge_partition": args.merge_partition or args.combine_partition,
+        "merge_mail_type": args.merge_mail_type or args.combine_mail_type,
+    }
+
+    queue_file = Path(args.queue_file).resolve()
+    queue_file.write_text(json.dumps({"config": config, "remaining_batches": missing_batches}, indent=2))
+    print(f"\nExpand queue written to {queue_file}.")
+
+    cmd_next(argparse.Namespace(queue_file=str(queue_file)))
+
+
 def cmd_next(args):
     queue_file = Path(args.queue_file).resolve()
     state = json.loads(queue_file.read_text())
@@ -526,6 +652,36 @@ if __name__ == "__main__":
                           help="SLURM mail-type for the merge job (default: same as --combine_mail_type).")
     p_start.add_argument("--dry_run", action="store_true", help="Preview batch count/names; write nothing, submit nothing.")
     p_start.set_defaults(func=cmd_start)
+
+    p_expand = sub.add_parser("expand", help="Submit only missing batches for an existing merged grid.")
+    p_expand.add_argument("--base_dir", required=True, help="Existing merged grid directory (contains combined_history.hdf5 and per-batch subdirs with notes.txt).")
+    p_expand.add_argument("--source_dir", required=True, help="Clean template grid directory to copy per batch.")
+    p_expand.add_argument("--queue_file", required=True)
+    p_expand.add_argument("--outer", action="append", required=True, metavar="KEY=SPEC")
+    p_expand.add_argument("--inner", action="append", required=True, metavar="KEY=SPEC")
+    p_expand.add_argument("--grid_type", choices=["linear", "sobol"], default="linear")
+    p_expand.add_argument("--num_points", type=int, default=8)
+    p_expand.add_argument("--outer_grid_type", choices=["linear", "sobol"], default="linear")
+    p_expand.add_argument("--outer_num_points", type=int, default=8)
+    p_expand.add_argument("--python", default=sys.executable)
+    p_expand.add_argument("--conda_env", default="py311")
+    p_expand.add_argument("--array_time", default="12:00:00")
+    p_expand.add_argument("--array_mem", default="8G")
+    p_expand.add_argument("--array_partition", default="day")
+    p_expand.add_argument("--array_mail_type", default="ALL")
+    p_expand.add_argument("--combine_time", default="2:00:00")
+    p_expand.add_argument("--combine_mem", default="16G")
+    p_expand.add_argument("--combine_partition", default="day")
+    p_expand.add_argument("--combine_mail_type", default="ALL")
+    p_expand.add_argument("--no_retry", action="store_true")
+    p_expand.add_argument("--fail_threshold_mb", type=float, default=13.0)
+    p_expand.add_argument("--no_merge_after", action="store_true")
+    p_expand.add_argument("--merge_time", default="4:00:00")
+    p_expand.add_argument("--merge_mem", default="32G")
+    p_expand.add_argument("--merge_partition", default=None)
+    p_expand.add_argument("--merge_mail_type", default=None)
+    p_expand.add_argument("--dry_run", action="store_true", help="Show coverage and missing batches; write nothing, submit nothing.")
+    p_expand.set_defaults(func=cmd_expand)
 
     p_next = sub.add_parser("next", help="Pop and submit the next batch in the queue (called automatically).")
     p_next.add_argument("--queue_file", required=True)
