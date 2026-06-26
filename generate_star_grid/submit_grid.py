@@ -282,11 +282,10 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_TH
     run_array.chmod(0o755)
 
     inner_keys_csv = ",".join(_label_for_key(k, registry) for k in config["inner_keys"])
-    # --constants must also include the outer keys fixed for this batch (e.g. Z) --
-    # they're embedded in every per-star subdir name alongside the inner keys, but
-    # aren't varying *within* this array, so they're absent from inner_keys.
-    constants_keys_csv = ",".join(
-        _label_for_key(k, registry) for k in list(config["inner_keys"]) + list(batch.keys())
+    # nargs="*" in make_grid expects space-separated tokens, not comma-separated.
+    # Only outer batch keys are constants within a given batch (inner keys are swept).
+    constants_keys_spc = " ".join(
+        _label_for_key(k, registry) for k in batch.keys()
     )
     run_combine = dest / "run_combine_cleanup.sh"
     run_combine.write_text(f"""#!/bin/bash
@@ -338,7 +337,7 @@ fi
 echo "Building combined_history.hdf5..."
 "{python}" -m generate_star_grid.make_grid \\
     --parent_dir "$DEST" \\
-    --constants {constants_keys_csv} \\
+    --constants {constants_keys_spc} \\
     --save
 
 if [ -n "$FAILED" ]; then
