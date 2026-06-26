@@ -271,12 +271,23 @@ directory names without writing the queue file or submitting anything.
 ````
 
 This submits the first batch and writes `queue.json`, which tracks the remaining
-outer batches and all per-batch configuration (SLURM resources, conda env, retry
-settings, etc. — see `submit_grid start --help` for the full list of overridable
-flags). Each batch's combine/cleanup job calls `submit_grid next --queue_file ...`
-itself once it actually finishes, rather than via a pre-declared SLURM dependency —
-this is what lets a failed-task retry happen first without losing track of when the
-batch is really done.
+outer batches and all per-batch configuration. Each batch's combine/cleanup job
+calls `submit_grid next --queue_file ...` itself once it actually finishes, rather
+than via a pre-declared SLURM dependency — this is what lets a failed-task retry
+happen first without losing track of when the batch is really done.
+
+Key SLURM flags for the array jobs (all overridable via `submit_grid start`):
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--array_partition` | `day` | Partition for each batch's SLURM array; `day` allows up to 1000 simultaneous CPUs |
+| `--array_time` | `12:00:00` | Per-task time limit; individual MESA tasks typically finish in under 10h |
+| `--array_mem` | `8G` | Per-task memory; actual MESA usage is typically 4–5 GB |
+| `--combine_partition` | `day` | Partition for the combine/cleanup job after each batch |
+| `--combine_time` | `2:00:00` | Wall time for the combine/cleanup job |
+| `--combine_mem` | `16G` | Memory for the combine/cleanup job |
+
+See `submit_grid start --help` for the full list of overridable flags.
 
 ## Continuation Runs (Post-MS Evolution)
 
