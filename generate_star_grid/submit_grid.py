@@ -195,6 +195,11 @@ def cmd_start(args):
         "combine_mail_type": args.combine_mail_type,
         "retry_once": not args.no_retry,
         "fail_threshold_mb": args.fail_threshold_mb,
+        "merge_after": not args.no_merge_after,
+        "merge_time": args.merge_time,
+        "merge_mem": args.merge_mem,
+        "merge_partition": args.merge_partition or args.combine_partition,
+        "merge_mail_type": args.merge_mail_type or args.combine_mail_type,
     }
     queue_file = Path(args.queue_file).resolve()
     queue_file.write_text(json.dumps({"config": config, "remaining_batches": outer_batches}, indent=2))
@@ -403,11 +408,49 @@ def _inner_model_count(config: dict) -> int:
     return len(generate_grid(specs, grid_type=grid_type, num_points=num_points))
 
 
+def _write_and_submit_merge(queue_file: Path, config: dict) -> None:
+    """Generate run_merge.sh in parent_dir and submit it to SLURM."""
+    parent_dir = Path(config["parent_dir"])
+    python = config["python"]
+
+    run_merge = parent_dir / "run_merge.sh"
+    run_merge.write_text(f"""#!/bin/bash
+#SBATCH --job-name=merge_grid
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition={config['merge_partition']}
+#SBATCH --nodes=1
+#SBATCH --time={config['merge_time']}
+#SBATCH --mem={config['merge_mem']}
+#SBATCH --mail-type={config['merge_mail_type']}
+#SBATCH --output={parent_dir}/merge_%j.out
+
+module purge
+module load miniconda
+conda activate {config['conda_env']}
+
+echo "Merging per-batch combined_history.hdf5 files..."
+"{python}" -m generate_star_grid.merge_grids --queue_file "{queue_file}"
+
+echo "Merge complete."
+""")
+    run_merge.chmod(0o755)
+
+    merge_job = subprocess.run(
+        ["sbatch", "--parsable", str(run_merge)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    print(f"Submitted merge job {merge_job} ({run_merge})")
+
+
 def cmd_next(args):
     queue_file = Path(args.queue_file).resolve()
     state = json.loads(queue_file.read_text())
     if not state["remaining_batches"]:
         print("Queue empty. All outer batches have been processed.")
+        if state["config"].get("merge_after", False):
+            print("Submitting final merge job...")
+            _write_and_submit_merge(queue_file, state["config"])
         return
     batch = state["remaining_batches"].pop(0)
     queue_file.write_text(json.dumps(state, indent=2))
@@ -450,6 +493,16 @@ if __name__ == "__main__":
     p_start.add_argument("--combine_mail_type", default="ALL")
     p_start.add_argument("--no_retry", action="store_true", help="Disable the retry-once-on-failure behavior.")
     p_start.add_argument("--fail_threshold_mb", type=float, default=13.0)
+    p_start.add_argument("--no_merge_after", action="store_true",
+                          help="Skip the final merge step that combines all per-batch HDF5 files into one.")
+    p_start.add_argument("--merge_time", default="4:00:00",
+                          help="Wall time for the merge SLURM job (default: 4:00:00).")
+    p_start.add_argument("--merge_mem", default="32G",
+                          help="Memory for the merge SLURM job (default: 32G).")
+    p_start.add_argument("--merge_partition", default=None,
+                          help="SLURM partition for the merge job (default: same as --combine_partition).")
+    p_start.add_argument("--merge_mail_type", default=None,
+                          help="SLURM mail-type for the merge job (default: same as --combine_mail_type).")
     p_start.add_argument("--dry_run", action="store_true", help="Preview batch count/names; write nothing, submit nothing.")
     p_start.set_defaults(func=cmd_start)
 
