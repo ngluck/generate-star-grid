@@ -135,6 +135,28 @@ def _dest_name_for_batch(source_dir: Path, batch: dict, formats: dict, registry:
     return f"{base}_{label.replace('.', 'p')}"
 
 
+def _dest_name_for_batch_v2(source_dir: Path, batch: dict, formats: dict, registry: dict) -> str:
+    """
+    Like _dest_name_for_batch but:
+    - strips ALL trailing _var<Param> suffixes (not just the last one)
+    - sorts batch keys in canonical PARAM_FORMAT order for consistent dir names
+      regardless of the order --outer flags were supplied
+    """
+    base = re.sub(r"(_var[A-Za-z]+)+$", "", source_dir.name, flags=re.IGNORECASE)
+    canonical_order = list(PARAM_FORMAT.keys())
+    def key_order(k):
+        try:
+            return canonical_order.index(k)
+        except ValueError:
+            return len(canonical_order)
+    parts = []
+    for key in sorted(batch.keys(), key=key_order):
+        fmt = formats.get(key, registry[key]["fmt"])
+        parts.append(f"{registry[key]['label']}_{_trim_trailing_zeros(batch[key], fmt)}")
+    label = "_".join(parts)
+    return f"{base}_{label.replace('.', 'p')}"
+
+
 def cmd_start(args):
     source_dir = Path(args.source_dir).resolve()
     inlist_text = (source_dir / "inlist_template").read_text()

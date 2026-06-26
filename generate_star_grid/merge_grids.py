@@ -67,6 +67,53 @@ def _merged_dir_name(config: dict) -> str:
     return f"{base}_{'_'.join(var_parts)}"
 
 
+def _merged_dir_name_v2(config: dict) -> str:
+    """
+    Like _merged_dir_name but strips ALL trailing _var<Param> suffixes from
+    source_dir's name (not just the last one), so source dirs that already
+    carry one or more _var* tokens are handled correctly.
+    """
+    source_dir = Path(config["source_dir"])
+    registry = config["registry"]
+
+    base = re.sub(r"(_var[A-Za-z]+)+$", "", source_dir.name, flags=re.IGNORECASE)
+
+    all_varying_keys = (
+        set(config.get("inner_keys", [])) | set(config.get("outer_formats", {}).keys())
+    )
+
+    canonical_order = list(PARAM_FORMAT.keys())
+    var_parts = []
+    for key in canonical_order:
+        if key in all_varying_keys and key in registry:
+            var_parts.append(f"var{registry[key]['label']}")
+    for key in sorted(all_varying_keys):
+        if key not in canonical_order and key in registry:
+            var_parts.append(f"var{registry[key]['label']}")
+
+    return f"{base}_{'_'.join(var_parts)}"
+
+
+def _find_batch_dirs_v2(config: dict) -> list:
+    """
+    Like _find_batch_dirs but uses _merged_dir_name_v2 (multi-suffix regex)
+    to correctly exclude the merged dir when the source dir name already
+    contains _var* tokens.
+    """
+    parent_dir = Path(config["parent_dir"])
+    source_dir = Path(config["source_dir"])
+    base = re.sub(r"(_var[A-Za-z]+)+$", "", source_dir.name, flags=re.IGNORECASE)
+    merged_name = _merged_dir_name_v2(config)
+
+    return sorted(
+        d for d in parent_dir.iterdir()
+        if d.is_dir()
+        and d.name.startswith(base)
+        and d.name != merged_name
+        and (d / "combined_history.hdf5").exists()
+    )
+
+
 def _find_batch_dirs(config: dict) -> list:
     """
     Discover batch directories in parent_dir that have a combined_history.hdf5.
