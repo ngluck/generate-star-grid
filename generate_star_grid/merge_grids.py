@@ -199,6 +199,110 @@ def merge_batch_hdf5(
     return total_rows
 
 
+def _extract_var_labels(dir_name: str) -> list:
+    """Return the _var<Label> labels present in a directory name, in order."""
+    return re.findall(r"_var([A-Za-z]+)", dir_name, flags=re.IGNORECASE)
+
+
+def _expanded_dir_name(base_dir: Path, new_config: dict) -> str:
+    """
+    Derive the name for the new expanded merged directory.
+
+    Combines the _var<Label> labels already in base_dir's name with those
+    from the new expand queue config, deduplicates, and sorts in canonical
+    PARAM_FORMAT order.
+    """
+    registry = new_config["registry"]
+    base = re.sub(r"(_var[A-Za-z]+)+$", "", base_dir.name, flags=re.IGNORECASE)
+
+    existing_labels = set(_extract_var_labels(base_dir.name))
+
+    new_varying_keys = (
+        set(new_config.get("inner_keys", [])) | set(new_config.get("outer_formats", {}).keys())
+    )
+    new_labels = {registry[k]["label"] for k in new_varying_keys if k in registry}
+
+    all_labels = existing_labels | new_labels
+
+    # Sort by canonical PARAM_FORMAT order; unknowns go last alphabetically
+    canonical_order = [PARAM_FORMAT[k]["label"] for k in PARAM_FORMAT]
+    def label_order(lbl):
+        try:
+            return canonical_order.index(lbl)
+        except ValueError:
+            return len(canonical_order)
+
+    sorted_labels = sorted(all_labels, key=label_order)
+    var_parts = "_".join(f"var{lbl}" for lbl in sorted_labels)
+    return f"{base}_{var_parts}"
+
+
+def cmd_expand(args) -> None:
+    """
+    Incrementally expand an existing merged grid with new batch HDF5s.
+
+    Reads the existing merged HDF5 from base_dir as the first input, then
+    appends new batch HDF5s (discovered via the expand queue file) with Track
+    values offset after the base. Creates a new expanded merged directory,
+    moves base_dir and new batch dirs inside it.
+    """
+    queue_file = Path(args.queue_file).resolve()
+    state = json.loads(queue_file.read_text())
+    config = state["config"]
+
+    base_dir = Path(args.base_dir).resolve()
+    if not base_dir.is_dir():
+        raise ValueError(f"--base_dir {base_dir} does not exist.")
+    if not (base_dir / "combined_history.hdf5").exists():
+        raise ValueError(f"{base_dir} has no combined_history.hdf5.")
+
+    parent_dir = Path(config["parent_dir"])
+
+    # Discover new batch dirs: siblings in parent_dir with combined_history.hdf5,
+    # excluding base_dir itself and any existing merged dirs (_var* in name).
+    new_batch_dirs = sorted(
+        d for d in parent_dir.iterdir()
+        if d.is_dir()
+        and d != base_dir
+        and not re.search(r"_var[A-Za-z]+", d.name, re.IGNORECASE)
+        and (d / "combined_history.hdf5").exists()
+    )
+
+    if not new_batch_dirs:
+        print("No new batch directories with combined_history.hdf5 found. Nothing to expand.")
+        return
+
+    expanded_name = _expanded_dir_name(base_dir, config)
+    expanded_dir = parent_dir / expanded_name
+
+    print(f"Base merged dir:  {base_dir}")
+    print(f"New batch dirs ({len(new_batch_dirs)}):")
+    for d in new_batch_dirs:
+        print(f"  {d.name}")
+    print(f"Expanded merged dir: {expanded_dir}")
+
+    if args.dry_run:
+        print("\n--dry_run: no files written or moved.")
+        return
+
+    expanded_dir.mkdir(parents=True, exist_ok=True)
+
+    # Merge: base_dir first (tracks unchanged), then new batches (tracks offset)
+    all_inputs = [base_dir] + list(new_batch_dirs)
+    output_path = expanded_dir / args.hdf5_filename
+    total_rows = merge_batch_hdf5(all_inputs, output_path, hdf5_key=args.hdf5_key)
+    print(f"Expanded HDF5 written to {output_path} ({total_rows} rows total).")
+
+    # Move base_dir and new batch dirs inside expanded_dir
+    print("Moving directories into expanded merged directory...")
+    for d in all_inputs:
+        dest = expanded_dir / d.name
+        shutil.move(str(d), str(dest))
+        print(f"  Moved {d.name} -> {expanded_name}/{d.name}")
+
+    print(f"\nDone. Expanded grid at {expanded_dir}")
+
+
 def cmd_merge(args) -> None:
     if args.queue_file:
         queue_file = Path(args.queue_file).resolve()
@@ -247,35 +351,42 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument(
-        "--queue_file",
-        help="Path to submit_grid queue.json. Auto-discovers batch dirs and derives merged dir name.",
-    )
-    source.add_argument(
-        "--batch_dirs",
-        nargs="+",
-        metavar="DIR",
-        help="Explicit batch directories to merge (requires --output_dir).",
-    )
-    parser.add_argument(
-        "--output_dir",
-        help="Override the auto-derived merged directory path.",
-    )
-    parser.add_argument(
-        "--hdf5_filename",
-        default="combined_history.hdf5",
-        help="Output HDF5 filename (default: combined_history.hdf5).",
-    )
-    parser.add_argument(
-        "--hdf5_key",
-        default="history",
-        help="HDF5 store key (default: history).",
-    )
-    parser.add_argument(
-        "--dry_run",
-        action="store_true",
-        help="Preview batch dirs and merged path without writing or moving anything.",
-    )
+    sub = parser.add_subparsers(dest="command")
+
+    # ----- merge (default, backwards-compatible) -----
+    p_merge = sub.add_parser("merge", help="Merge per-batch HDF5s into one merged grid.")
+    source = p_merge.add_mutually_exclusive_group(required=True)
+    source.add_argument("--queue_file", help="Path to submit_grid queue.json.")
+    source.add_argument("--batch_dirs", nargs="+", metavar="DIR")
+    p_merge.add_argument("--output_dir")
+    p_merge.add_argument("--hdf5_filename", default="combined_history.hdf5")
+    p_merge.add_argument("--hdf5_key", default="history")
+    p_merge.add_argument("--dry_run", action="store_true")
+    p_merge.set_defaults(func=cmd_merge)
+
+    # ----- expand -----
+    p_expand = sub.add_parser("expand", help="Expand an existing merged grid with new batches.")
+    p_expand.add_argument("--base_dir", required=True, help="Existing merged grid directory.")
+    p_expand.add_argument("--queue_file", required=True, help="Expand queue file from submit_grid expand.")
+    p_expand.add_argument("--hdf5_filename", default="combined_history.hdf5")
+    p_expand.add_argument("--hdf5_key", default="history")
+    p_expand.add_argument("--dry_run", action="store_true")
+    p_expand.set_defaults(func=cmd_expand)
+
     parsed = parser.parse_args()
-    cmd_merge(parsed)
+
+    # Backwards compatibility: if no subcommand given, fall through to cmd_merge
+    # using the old flat argument style (--queue_file / --batch_dirs at top level).
+    if parsed.command is None:
+        parser_legacy = argparse.ArgumentParser()
+        source = parser_legacy.add_mutually_exclusive_group(required=True)
+        source.add_argument("--queue_file")
+        source.add_argument("--batch_dirs", nargs="+", metavar="DIR")
+        parser_legacy.add_argument("--output_dir")
+        parser_legacy.add_argument("--hdf5_filename", default="combined_history.hdf5")
+        parser_legacy.add_argument("--hdf5_key", default="history")
+        parser_legacy.add_argument("--dry_run", action="store_true")
+        parsed = parser_legacy.parse_args()
+        cmd_merge(parsed)
+    else:
+        parsed.func(parsed)

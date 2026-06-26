@@ -464,6 +464,44 @@ echo "Merge complete."
     print(f"Submitted merge job {merge_job} ({run_merge})")
 
 
+def _write_and_submit_expand_merge(queue_file: Path, config: dict) -> None:
+    """Generate run_expand_merge.sh in parent_dir and submit it to SLURM."""
+    parent_dir = Path(config["parent_dir"])
+    python = config["python"]
+    base_dir = config["expand_base_dir"]
+
+    run_merge = parent_dir / "run_expand_merge.sh"
+    run_merge.write_text(f"""#!/bin/bash
+#SBATCH --job-name=expand_merge
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition={config['merge_partition']}
+#SBATCH --nodes=1
+#SBATCH --time={config['merge_time']}
+#SBATCH --mem={config['merge_mem']}
+#SBATCH --mail-type={config['merge_mail_type']}
+#SBATCH --output={parent_dir}/expand_merge_%j.out
+
+module purge
+module load miniconda
+conda activate {config['conda_env']}
+
+echo "Expanding merged grid..."
+"{python}" -m generate_star_grid.merge_grids expand \\
+    --base_dir "{base_dir}" \\
+    --queue_file "{queue_file}"
+
+echo "Expand merge complete."
+""")
+    run_merge.chmod(0o755)
+
+    merge_job = subprocess.run(
+        ["sbatch", "--parsable", str(run_merge)],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    print(f"Submitted expand merge job {merge_job} ({run_merge})")
+
+
 def _is_covered(batch: dict, covered_combos: list, tol: float = 1e-9) -> bool:
     """Return True if batch matches any entry in covered_combos within tolerance."""
     for covered in covered_combos:
@@ -596,8 +634,12 @@ def cmd_next(args):
     if not state["remaining_batches"]:
         print("Queue empty. All outer batches have been processed.")
         if state["config"].get("merge_after", False):
-            print("Submitting final merge job...")
-            _write_and_submit_merge(queue_file, state["config"])
+            if state["config"].get("expand_base_dir"):
+                print("Submitting expand merge job...")
+                _write_and_submit_expand_merge(queue_file, state["config"])
+            else:
+                print("Submitting final merge job...")
+                _write_and_submit_merge(queue_file, state["config"])
         return
     batch = state["remaining_batches"].pop(0)
     queue_file.write_text(json.dumps(state, indent=2))
