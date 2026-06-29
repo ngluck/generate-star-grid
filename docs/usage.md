@@ -1,4 +1,4 @@
-# Usage
+# Basic Usage
 
 ## Setting Up a Grid Run Directory
 
@@ -196,9 +196,9 @@ python -m generate_star_grid.grid_utils \
 If `--num_points` is not a power of 2, the dry run will warn you before any models are built.
 ````
 
-### SLURM Job Array (Recommended for Large Grids)
+### SLURM Job Array
 
-Copy [`slurm/generate_grid_week_array.sh`](https://github.com/ngluck/generate-star-grid/blob/main/slurm/generate_grid_week_array.sh) 
+Copy [`slurm/generate_grid_week_array.sh`](https://github.com/ngluck/generate-star-grid/blob/main/slurm/generate_grid_week_array.sh)
 into the parent directory of your run,
 edit the configuration variables at the top, and submit:
 
@@ -224,70 +224,6 @@ python -m generate_star_grid.grid_utils \
 ````{note}
 The `--array` index must match `--num_points` (array `0-N` for `N+1` points).
 ````
-
-### Multi-Batch Grids (Recommended When the Full Grid Won't Fit on Disk)
-
-For grids too large to keep on disk all at once (e.g. 500 masses × 10 metallicities),
-`submit_grid.py` splits the sweep into an **outer** parameter (processed sequentially,
-one disk-bounded batch at a time) and an **inner** parameter (swept within each
-batch's SLURM array). Each batch: copies the template directory, submits the array job,
-then submits a combine/cleanup job that builds that batch's `combined_history.hdf5`,
-retries any failed tasks once (see below), deletes the batch's run artifacts, and only
-then triggers the next outer batch — so peak disk usage is bounded by a single batch's
-footprint, not the whole grid's.
-
-````{note}
-Each batch's `combined_history.hdf5` gets a constant column for both its inner
-key (e.g. `M`) and every outer key fixed for that batch (e.g. `Z`) — both are
-present in each per-star subdirectory's name (e.g.
-`M_0.700_Y_0.27_Z_0.000379_alpha_2.0`), so both are extracted.
-````
-
-````{tip}
-If the environment variable `SEISTRON_BASE_DIR` is set, each combine job also
-plots a quick HR diagram (evenly spaced tracks colored by mass) into the batch
-directory next to `combined_history.hdf5`, via a sibling project's
-`my_library.grid_builders.plot_grid_hr_diagram` module, as a visual sanity
-check that the grid looks as expected. This step is entirely optional: it's
-skipped with a one-line message if the variable isn't set, and a plotting
-failure only logs a warning rather than failing the combine/cleanup job.
-````
-
-`--outer` and `--inner` both accept repeatable `KEY=SPEC` arguments, using the same
-grammar as `--param` (built-in aliases `mass`/`y`/`z`/`alpha`, or any other
-`inlist_template` parameter):
-
-````bash
-python -m generate_star_grid.submit_grid start \
-    --source_dir /path/to/clean/template_dir \
-    --queue_file /path/to/queue.json \
-    --outer 'initial_z=0.001,0.0015,0.0023,...,0.04' \
-    --inner mass=0.7:1.2 --grid_type linear --num_points 500
-````
-
-````{tip}
-Add `--dry_run` to preview the batch count, models-per-batch, and example batch
-directory names without writing the queue file or submitting anything.
-````
-
-This submits the first batch and writes `queue.json`, which tracks the remaining
-outer batches and all per-batch configuration. Each batch's combine/cleanup job
-calls `submit_grid next --queue_file ...` itself once it actually finishes, rather
-than via a pre-declared SLURM dependency — this is what lets a failed-task retry
-happen first without losing track of when the batch is really done.
-
-Key SLURM flags for the array jobs (all overridable via `submit_grid start`):
-
-| Flag | Default | Notes |
-|---|---|---|
-| `--array_partition` | `day` | Partition for each batch's SLURM array; `day` allows up to 1000 simultaneous CPUs |
-| `--array_time` | `12:00:00` | Per-task time limit; individual MESA tasks typically finish in under 10h |
-| `--array_mem` | `8G` | Per-task memory; actual MESA usage is typically 4–5 GB |
-| `--combine_partition` | `day` | Partition for the combine/cleanup job after each batch |
-| `--combine_time` | `2:00:00` | Wall time for the combine/cleanup job |
-| `--combine_mem` | `16G` | Memory for the combine/cleanup job |
-
-See `submit_grid start --help` for the full list of overridable flags.
 
 ## Continuation Runs (Post-MS Evolution)
 

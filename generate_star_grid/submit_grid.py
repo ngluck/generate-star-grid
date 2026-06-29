@@ -33,6 +33,7 @@ Usage:
 """
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -195,7 +196,11 @@ def cmd_start(args):
         print(f"  ... ({len(outer_batches) - 3} more)")
 
     if args.dry_run:
-        print("\n--dry_run: queue file not written, no jobs submitted.")
+        if args.parallel > 1:
+            chunk_size = (len(outer_batches) + args.parallel - 1) // args.parallel
+            actual_parallel = min(args.parallel, len(outer_batches))
+            print(f"--parallel {args.parallel}: would create {actual_parallel} queue files of ≤{chunk_size} batches each.")
+        print("--dry_run: queue file not written, no jobs submitted.")
         return
 
     config = {
@@ -222,12 +227,40 @@ def cmd_start(args):
         "merge_mem": args.merge_mem,
         "merge_partition": args.merge_partition or args.combine_partition,
         "merge_mail_type": args.merge_mail_type or args.combine_mail_type,
+        "max_cpus": args.max_cpus,
     }
-    queue_file = Path(args.queue_file).resolve()
-    queue_file.write_text(json.dumps({"config": config, "remaining_batches": outer_batches}, indent=2))
-    print(f"\nQueue written to {queue_file}.")
 
-    cmd_next(argparse.Namespace(queue_file=str(queue_file)))
+    parallel = args.parallel
+    if parallel > 1:
+        chunk_size = (len(outer_batches) + parallel - 1) // parallel
+        chunks = [outer_batches[i:i + chunk_size] for i in range(0, len(outer_batches), chunk_size)]
+        actual_parallel = len(chunks)
+        parent_dir_path = Path(config["parent_dir"])
+        queue_stem = Path(args.queue_file).stem
+        queue_dir = Path(args.queue_file).parent
+        done_files = [str(parent_dir_path / f".par_done_{queue_stem}_{i}") for i in range(actual_parallel)]
+        merge_sentinel = str(parent_dir_path / f".par_merge_{queue_stem}")
+        queue_files = []
+        for i, chunk in enumerate(chunks):
+            qf = queue_dir / f"{queue_stem}_par{i}.json"
+            per_config = {
+                **config,
+                "parallel_total": actual_parallel,
+                "parallel_index": i,
+                "parallel_done_files": done_files,
+                "parallel_merge_sentinel": merge_sentinel,
+            }
+            qf.write_text(json.dumps({"config": per_config, "remaining_batches": chunk}, indent=2))
+            print(f"Queue {i} written to {qf} ({len(chunk)} batches).")
+            queue_files.append(qf)
+        print(f"\nStarting {actual_parallel} parallel queues...")
+        for qf in queue_files:
+            cmd_next(argparse.Namespace(queue_file=str(qf)))
+    else:
+        queue_file = Path(args.queue_file).resolve()
+        queue_file.write_text(json.dumps({"config": config, "remaining_batches": outer_batches}, indent=2))
+        print(f"\nQueue written to {queue_file}.")
+        cmd_next(argparse.Namespace(queue_file=str(queue_file)))
 
 
 def _write_and_submit_batch(queue_file: Path, config: dict, batch: dict) -> None:
@@ -275,12 +308,20 @@ def _write_and_submit_batch(queue_file: Path, config: dict, batch: dict) -> None
     # the same parse grid_utils.py would do at array-job runtime.
     inner_count = _inner_model_count(config)
 
+    max_cpus = config.get("max_cpus")
+    parallel_total = config.get("parallel_total", 1)
+    if max_cpus is not None:
+        throttle = max(1, max_cpus // parallel_total)
+        array_spec = f"0-{inner_count - 1}%{throttle}"
+    else:
+        array_spec = f"0-{inner_count - 1}"
+
     python_inv = " \\\n    ".join([f'"{python}" -m generate_star_grid.grid_utils'] + fixed_args + config["inner_cli_args"])
 
     run_array = dest / "run_array.sh"
     run_array.write_text(f"""#!/bin/bash
 #SBATCH --job-name=mesa_{job_label}
-#SBATCH --array=0-{inner_count - 1}
+#SBATCH --array={array_spec}
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --partition={config['array_partition']}
@@ -345,7 +386,7 @@ if [ -n "$FAILED" ] && [ "$RETRY_DONE" -eq 0 ] && [ "{1 if config['retry_once'] 
 
     FAILED_IDS=$(echo "$FAILED" | cut -d'|' -f1 | paste -sd, -)
     echo "Retrying failed tasks once: $FAILED_IDS"
-    RETRY_JOB=$(sbatch --parsable --array=$FAILED_IDS "$DEST/run_array.sh")
+    RETRY_JOB=$(sbatch --parsable --job-name=retry_{job_label} --array=$FAILED_IDS "$DEST/run_array.sh")
     sbatch --dependency=afterany:$RETRY_JOB --export=ALL,RETRY_DONE=1 "$DEST/run_combine_cleanup.sh"
     echo "Handed off to retry chain (array job $RETRY_JOB); exiting without finalizing."
     exit 0
@@ -628,18 +669,46 @@ def cmd_expand(args):
     cmd_next(argparse.Namespace(queue_file=str(queue_file)))
 
 
+def _parallel_queue_done(queue_file: Path, config: dict) -> None:
+    """Called when one parallel queue empties. Submits merge once all queues are done."""
+    idx = config["parallel_index"]
+    total = config["parallel_total"]
+    done_file = Path(config["parallel_done_files"][idx])
+    done_file.touch()
+    done_count = sum(1 for f in config["parallel_done_files"] if Path(f).exists())
+    print(f"Parallel queue {idx + 1}/{total} done ({done_count}/{total} complete).")
+    if done_count < total or not config.get("merge_after", False):
+        return
+    sentinel = Path(config["parallel_merge_sentinel"])
+    try:
+        fd = os.open(str(sentinel), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+    except FileExistsError:
+        print("Merge already submitted by another queue; skipping.")
+        return
+    if config.get("expand_base_dir"):
+        print("All parallel queues done. Submitting expand merge job...")
+        _write_and_submit_expand_merge(queue_file, config)
+    else:
+        print("All parallel queues done. Submitting final merge job...")
+        _write_and_submit_merge(queue_file, config)
+
+
 def cmd_next(args):
     queue_file = Path(args.queue_file).resolve()
     state = json.loads(queue_file.read_text())
     if not state["remaining_batches"]:
+        config = state["config"]
         print("Queue empty. All outer batches have been processed.")
-        if state["config"].get("merge_after", False):
-            if state["config"].get("expand_base_dir"):
+        if config.get("parallel_total", 1) > 1:
+            _parallel_queue_done(queue_file, config)
+        elif config.get("merge_after", False):
+            if config.get("expand_base_dir"):
                 print("Submitting expand merge job...")
-                _write_and_submit_expand_merge(queue_file, state["config"])
+                _write_and_submit_expand_merge(queue_file, config)
             else:
                 print("Submitting final merge job...")
-                _write_and_submit_merge(queue_file, state["config"])
+                _write_and_submit_merge(queue_file, config)
         return
     batch = state["remaining_batches"].pop(0)
     queue_file.write_text(json.dumps(state, indent=2))
@@ -692,6 +761,11 @@ if __name__ == "__main__":
                           help="SLURM partition for the merge job (default: same as --combine_partition).")
     p_start.add_argument("--merge_mail_type", default=None,
                           help="SLURM mail-type for the merge job (default: same as --combine_mail_type).")
+    p_start.add_argument("--parallel", type=int, default=1,
+                          help="Number of outer-batch queues to advance simultaneously (default: 1, serial).")
+    p_start.add_argument("--max_cpus", type=int, default=None,
+                          help="Maximum CPUs to use across all parallel queues via SLURM array throttling "
+                               "(e.g. 990 to leave 10 free). Default: no throttle.")
     p_start.add_argument("--dry_run", action="store_true", help="Preview batch count/names; write nothing, submit nothing.")
     p_start.set_defaults(func=cmd_start)
 

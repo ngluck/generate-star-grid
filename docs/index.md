@@ -64,6 +64,7 @@ How to cite generate-star-grid in your research.
 
 installation
 usage
+advanced_usage
 ```
 
 ```{toctree}
