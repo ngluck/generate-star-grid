@@ -144,3 +144,102 @@ job is submitted with the prefix `retry_` in its SLURM job name — e.g.
 immediately distinguishable in `squeue`, `sacct`, and SLURM notification email subject
 lines. The full list of retried task IDs, folders, and initial conditions is always
 written to the batch's `combine_<jobid>.out` stdout file.
+
+## Expanding an Existing Grid
+
+If you have a finished merged grid and want to add new outer-parameter combinations
+without re-running what is already computed, three tools work together:
+
+1. **`grid_inventory`** — inspect what is already covered
+2. **`submit_grid expand`** — submit only the missing batches
+3. **`merge_grids expand`** — stitch the new batches into the existing merged grid (runs automatically)
+
+### Checking Coverage with `grid_inventory`
+
+`grid_inventory` scans a parent directory for merged grid directories (any directory
+containing `combined_history.hdf5` and a `_var<Label>` token in its name) and reports
+which outer-parameter combinations are covered, by reading each batch's `notes.txt`.
+
+````bash
+python -m generate_star_grid.grid_inventory --parent_dir /path/to/parent_dir
+````
+
+Example output for a finished M × Z grid:
+
+````
+my_grid_varM_varZ/
+  Varies: M (inner), Z (outer)
+  Fixed:  Y=0.28, alpha=2.0
+  Z values covered: 0.001, 0.002, 0.004, 0.007, 0.01, 0.014, 0.02, 0.028, 0.035, 0.04
+````
+
+For large grids with more than 8 outer values, the list is condensed to the first four
+with a count: `0.001, 0.002, 0.004, 0.007, ... (20 batches total)`.
+
+### Submitting Missing Batches with `submit_grid expand`
+
+`submit_grid expand` takes a finished merged grid directory (`--base_dir`) and the full
+*desired* outer spec. It reads each batch's `notes.txt` inside `--base_dir` to find what
+is already covered, then submits only the missing batches:
+
+````bash
+python -m generate_star_grid.submit_grid expand \
+    --base_dir /path/to/my_grid_varM_varZ \
+    --source_dir /path/to/template_dir \
+    --queue_file /path/to/expand_queue.json \
+    --outer 'initial_z=0.001,0.002,0.004,0.007,0.01,0.014,0.02,0.028,0.035,0.04' \
+    --outer 'initial_y=0.24,0.26,0.28,0.30' \
+    --inner 'mass=0.7:1.2' --num_points 500
+````
+
+````{tip}
+Add `--dry_run` to see coverage stats and the list of missing batches without
+writing a queue file or submitting anything:
+
+~~~
+Desired outer batches: 40
+Already covered:       10
+Missing (to submit):   30
+
+Missing batches:
+  my_grid_Y_0p24_Z_0p001/
+  my_grid_Y_0p24_Z_0p002/
+  ...
+--dry_run: queue file not written, no jobs submitted.
+~~~
+````
+
+The expand run behaves like a normal `submit_grid start` queue from there: one batch at
+a time, retrying failed tasks once, then automatically triggering `merge_grids expand`
+once all missing batches are done.
+
+````{note}
+Coverage matching uses float tolerance so that values like `0.0200` and `0.02` are
+treated as the same — minor formatting differences in `notes.txt` do not cause a batch
+to be incorrectly flagged as missing.
+````
+
+### How `merge_grids expand` Assembles the Result
+
+`merge_grids expand` is called automatically at the end of `submit_grid expand` but can
+also be run manually:
+
+````bash
+python -m generate_star_grid.merge_grids expand \
+    --base_dir /path/to/my_grid_varM_varZ \
+    --queue_file /path/to/expand_queue.json
+````
+
+It:
+1. Reads the existing `combined_history.hdf5` from `--base_dir` as the base
+2. Discovers new batch directories (siblings in the parent directory that have a
+   `combined_history.hdf5` and are not themselves a merged directory)
+3. Concatenates base + new batches, offsetting Track IDs in the new batches so they do
+   not collide with tracks already in the base
+4. Derives a new expanded directory name from the union of all parameter labels — e.g.
+   `my_grid_varM_varZ` becomes `my_grid_varM_varY_varZ`
+5. Moves `--base_dir` and all new batch directories inside the expanded directory
+
+The result is a single merged directory containing all original and new per-batch
+subdirectories alongside the combined `combined_history.hdf5` covering the full
+expanded parameter space.
