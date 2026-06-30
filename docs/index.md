@@ -63,6 +63,7 @@ How to cite generate-star-grid in your research.
 :hidden:
 
 installation
+quickstart
 usage
 advanced_usage
 troubleshooting

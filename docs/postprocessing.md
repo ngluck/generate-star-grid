@@ -26,6 +26,61 @@ python -m generate_star_grid.make_grid \
 This writes `combined_history.hdf5` into the grid run directory, with one row
 per timestep and columns for all history quantities plus the requested constants.
 
+## Loading `combined_history.hdf5` in Python
+
+The HDF5 file is a pandas DataFrame stored under the key `"history"`:
+
+```python
+import pandas as pd
+
+df = pd.read_hdf("/path/to/my_grid/combined_history.hdf5", key="history")
+```
+
+Each row is one timestep. The `Track` column (integer) identifies which stellar
+evolution track a row belongs to, and the constant parameters (`M`, `Y`, `Z`,
+`alpha`, and any extras passed to `--constants`) are repeated on every row of
+that track.
+
+```python
+# How many tracks are in the grid
+print(df["Track"].nunique())
+
+# All column names
+print(df.columns.tolist())
+
+# Select all timesteps for one track
+track0 = df[df["Track"] == 0]
+
+# Select all tracks at a given metallicity
+solar_z = df[df["Z"] == 0.014]
+
+# Iterate over tracks
+for tid, grp in df.groupby("Track"):
+    print(tid, grp["star_age"].iloc[-1])
+```
+
+Key columns available in every grid:
+
+| Column | Description |
+|---|---|
+| `Track` | Integer track ID, unique per stellar evolution track |
+| `M` | Initial mass (M☉) |
+| `Z` | Initial metallicity |
+| `Y` | Initial helium abundance |
+| `alpha` | Mixing-length parameter |
+| `star_age` | Stellar age (years) |
+| `log_Teff` | Log effective temperature |
+| `log_L` | Log luminosity (L☉) |
+| `log_R` | Log radius (R☉) |
+| `log_g` | Log surface gravity |
+| `center_h1` | Central hydrogen mass fraction |
+| `center_he4` | Central helium mass fraction |
+| `delta_nu` | Large frequency separation (μHz) |
+| `nu_max` | Frequency of maximum oscillation power (μHz) |
+| `delta_Pg` | Period spacing of g-modes (seconds) |
+
+All other columns in the file come directly from your `history_columns.list`.
+
 ## Cleaning Up `DATA/` After Combining
 
 Once `combined_history.hdf5` has been written, the per-model `DATA/` folders
