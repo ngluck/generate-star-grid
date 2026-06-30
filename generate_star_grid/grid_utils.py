@@ -618,6 +618,7 @@ def load_history_with_constants_from_profile(
     hdf5_key: str = "history",
     overwrite: bool = True,
     return_preview_rows: int = 5,
+    exclude_dirs: Optional[set] = None,
 ) -> pd.DataFrame:
     """
     Load MESA history files from model subdirectories and enrich with constant parameters.
@@ -646,6 +647,8 @@ def load_history_with_constants_from_profile(
     """
     parent_dir = Path(parent_dir)
     subdirs = sorted([d for d in parent_dir.iterdir() if d.is_dir()])
+    if exclude_dirs:
+        subdirs = [d for d in subdirs if d.name not in exclude_dirs]
     total = len(subdirs)
 
     if hdf5_filename is None:

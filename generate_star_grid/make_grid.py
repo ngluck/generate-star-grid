@@ -5,7 +5,7 @@ from .grid_utils import load_history_with_constants_from_profile, cleanup_grid_d
 
 
 def main(parent_dir: Path, save_as_hdf5: bool, hdf5_filename: str, constant_columns: list,
-         cleanup: str = "none"):
+         cleanup: str = "none", exclude_dirs: list = None):
     """
     Load MESA history files from a grid run directory and optionally save to HDF5.
 
@@ -18,6 +18,7 @@ def main(parent_dir: Path, save_as_hdf5: bool, hdf5_filename: str, constant_colu
         cleanup: 'none', 'zip', or 'delete'. After a successful HDF5 save,
             archive ('zip') or remove ('delete') each model's DATA/ folder
             (see cleanup_grid_data). Only applies when save_as_hdf5 is True.
+        exclude_dirs: Subdirectory names to skip (e.g. still-failed tasks).
     """
     df = load_history_with_constants_from_profile(
         parent_dir=parent_dir,
@@ -25,6 +26,7 @@ def main(parent_dir: Path, save_as_hdf5: bool, hdf5_filename: str, constant_colu
         save_as_hdf5=save_as_hdf5,
         hdf5_filename=hdf5_filename,
         extract_constants_from_dirname=True,
+        exclude_dirs=set(exclude_dirs) if exclude_dirs else None,
     )
     print(f"Loaded {len(df)} preview rows.")
     print("Preview:\n", df.head())
@@ -52,6 +54,10 @@ if __name__ == "__main__":
                              "Refuses to run unless every model has a TAMS save file in "
                              "grid_TAMS/ (i.e. all array jobs have finished). "
                              "Default: 'none'.")
+    parser.add_argument("--exclude_dirs", nargs="*", default=None,
+                        help="Subdirectory names to exclude from the HDF5 "
+                             "(e.g. still-failed task directories).")
     args = parser.parse_args()
 
-    main(Path(args.parent_dir).expanduser(), args.save, args.hdf5_filename, args.constants, args.cleanup)
+    main(Path(args.parent_dir).expanduser(), args.save, args.hdf5_filename, args.constants,
+         args.cleanup, args.exclude_dirs)

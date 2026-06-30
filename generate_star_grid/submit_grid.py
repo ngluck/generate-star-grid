@@ -392,16 +392,26 @@ if [ -n "$FAILED" ] && [ "$RETRY_DONE" -eq 0 ] && [ "{1 if config['retry_once'] 
     exit 0
 fi
 
+FAILED_FOLDERS=""
 if [ -n "$FAILED" ]; then
     N=$(echo "$FAILED" | wc -l)
     echo "WARNING: $N task(s) still failed. Excluding from HDF5; logging to notes.txt."
+    FAILED_FOLDERS=$(echo "$FAILED" | cut -d'|' -f2 | tr '\n' ' ')
 fi
 
 echo "Building combined_history.hdf5..."
-"{python}" -m generate_star_grid.make_grid \\
-    --parent_dir "$DEST" \\
-    --constants {constants_keys_spc} \\
-    --save
+if [ -n "$FAILED_FOLDERS" ]; then
+    "{python}" -m generate_star_grid.make_grid \\
+        --parent_dir "$DEST" \\
+        --constants {constants_keys_spc} \\
+        --save \\
+        --exclude_dirs $FAILED_FOLDERS
+else
+    "{python}" -m generate_star_grid.make_grid \\
+        --parent_dir "$DEST" \\
+        --constants {constants_keys_spc} \\
+        --save
+fi
 
 if [ -n "$FAILED" ]; then
     {{
