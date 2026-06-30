@@ -773,7 +773,7 @@ if __name__ == "__main__":
     p_start.add_argument("--combine_partition", default="day")
     p_start.add_argument("--combine_mail_type", default="ALL")
     p_start.add_argument("--no_retry", action="store_true", help="Disable the retry-once-on-failure behavior.")
-    p_start.add_argument("--fail_threshold_mb", type=float, default=13.0)
+    p_start.add_argument("--fail_threshold_mb", type=float, default=5.0)
     p_start.add_argument("--no_merge_after", action="store_true",
                           help="Skip the final merge step that combines all per-batch HDF5 files into one.")
     p_start.add_argument("--merge_time", default="4:00:00",
@@ -813,7 +813,7 @@ if __name__ == "__main__":
     p_expand.add_argument("--combine_partition", default="day")
     p_expand.add_argument("--combine_mail_type", default="ALL")
     p_expand.add_argument("--no_retry", action="store_true")
-    p_expand.add_argument("--fail_threshold_mb", type=float, default=13.0)
+    p_expand.add_argument("--fail_threshold_mb", type=float, default=5.0)
     p_expand.add_argument("--no_merge_after", action="store_true")
     p_expand.add_argument("--merge_time", default="4:00:00")
     p_expand.add_argument("--merge_mem", default="32G")
@@ -829,7 +829,7 @@ if __name__ == "__main__":
     p_check = sub.add_parser("check-failed", help="Print failed array tasks for a batch directory.")
     p_check.add_argument("--dest", required=True)
     p_check.add_argument("--keys", required=True, help="Comma-separated parameter labels to report, e.g. M,Y,Z,alpha")
-    p_check.add_argument("--threshold_mb", type=float, default=13.0)
+    p_check.add_argument("--threshold_mb", type=float, default=5.0)
     p_check.set_defaults(func=cmd_check_failed)
 
     parsed = parser.parse_args()

@@ -766,7 +766,7 @@ def load_mesa_histories_from_subdirs(
 
 
 def find_failed_tasks(
-    dest: Union[str, Path], keys: list, threshold_mb: float = 13.0
+    dest: Union[str, Path], keys: list, threshold_mb: float = 5.0
 ) -> list:
     """
     Find SLURM array tasks whose MESA run didn't produce a usable history.data.
@@ -777,11 +777,17 @@ def find_failed_tasks(
     'log_' prefix, '.txt' suffix, and '_TASK_<id>' suffix), so it works
     regardless of which parameters were swept or what values they took.
 
-    A task is considered failed if its DATA/history.data is missing or
-    smaller than threshold_mb.
+    A task is considered failed if it's missing its grid_TAMS/TAMS_*.mod save
+    file, or if DATA/history.data is missing or smaller than threshold_mb.
+    The TAMS file is what MESA writes on a genuine stop condition (save_model_
+    when_terminate), so its absence is what actually distinguishes a finished
+    track from one cut off mid-run -- e.g. a task that hit the SLURM --time
+    limit can still have accumulated history.data well past threshold_mb
+    without ever reaching TAMS, and would otherwise be missed.
 
     Args:
-        dest: Grid run directory containing LOGS/ and the model subdirectories.
+        dest: Grid run directory containing LOGS/, grid_TAMS/, and the model
+            subdirectories.
         keys: Parameter labels to extract from each failed model's directory
             name (e.g. ['M', 'Y', 'Z', 'alpha'], or labels for any extra
             --param parameters), via extract_constants_from_subdir_name.
@@ -802,8 +808,13 @@ def find_failed_tasks(
         folder_name = re.sub(r"^log_", "", log.stem)
         folder_name = re.sub(r"_TASK_\d+$", "", folder_name)
         history_file = dest / folder_name / "DATA" / "history.data"
+        tams_file = dest / "grid_TAMS" / f"TAMS_{folder_name}.mod"
 
-        ok = history_file.exists() and history_file.stat().st_size >= threshold_mb * 1024 * 1024
+        ok = (
+            tams_file.exists()
+            and history_file.exists()
+            and history_file.stat().st_size >= threshold_mb * 1024 * 1024
+        )
         if not ok:
             params = extract_constants_from_subdir_name(folder_name, keys)
             failed.append({"task_id": task_id, "folder": folder_name, "params": params})

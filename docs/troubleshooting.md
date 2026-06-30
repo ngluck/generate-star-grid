@@ -28,15 +28,24 @@ grids with other or multiple swept parameters, use `submit_grid check-failed` in
 
 `check-failed` is the general-purpose failure detector. It scans the `LOGS/` directory
 for per-task log files, reconstructs each task's model directory name from the log
-filename, and checks whether `DATA/history.data` exists and meets a minimum size
-threshold. A task is considered failed if the file is missing or smaller than
-`--threshold_mb` (default: 13 MB).
+filename, and checks two things for each one: whether it has a `grid_TAMS/TAMS_*.mod`
+save file, and whether `DATA/history.data` exists and meets a minimum size threshold.
+A task is considered failed if either check fails — its TAMS file is missing, or
+`history.data` is missing or smaller than `--threshold_mb` (default: 5 MB).
+
+The TAMS check matters because `history.data` size alone isn't a reliable signal
+of completion. A task can accumulate well over `threshold_mb` of `history.data`
+and still never finish — either because it hit the SLURM `--time` limit mid-run,
+or because MESA itself gave up (e.g. `termination code: min_timestep_limit` after
+exhausting solver retries) without reaching a real stop condition. `grid_TAMS/TAMS_*.mod`
+is only ever written by `save_model_when_terminate` on a genuine termination, so its
+absence is what actually distinguishes a finished track from one cut short — `history.data`
+size on its own would silently pass both of those cases as successes.
 
 ````bash
 python -m generate_star_grid.submit_grid check-failed \
     --dest /path/to/batch_dir \
-    --keys M,Y,Z,alpha \
-    --threshold_mb 13.0
+    --keys M,Y,Z,alpha
 ````
 
 Each failed task is printed as one line:
@@ -58,7 +67,7 @@ For example:
 |---|---|---|
 | `--dest` | yes | Path to the batch directory (contains `LOGS/` and model subdirectories) |
 | `--keys` | yes | Comma-separated parameter labels to extract from the folder name, e.g. `M,Y,Z,alpha` |
-| `--threshold_mb` | no | Minimum acceptable `history.data` size in MB (default: `13.0`) |
+| `--threshold_mb` | no | Minimum acceptable `history.data` size in MB (default: `5.0`) |
 
 #### How it works internally
 
@@ -69,7 +78,9 @@ For example:
 3. Reconstructs the model subdirectory name by stripping the `log_` prefix and
    `_TASK_<id>` suffix — this works for any parameter combination without any
    hardcoded assumptions
-4. Checks whether `<folder>/DATA/history.data` exists and is at least `threshold_mb` in size
+4. Checks whether `grid_TAMS/TAMS_<folder>.mod` exists **and** whether
+   `<folder>/DATA/history.data` exists and is at least `threshold_mb` in size —
+   a task must pass both checks to count as succeeded
 5. Returns a list of dicts with `task_id`, `folder`, and `params` for each failure
 
 This is also the function the combine/cleanup job calls internally to detect
@@ -80,15 +91,21 @@ is real, not just a warning in `notes.txt`.
 
 #### Tuning the failure threshold
 
-The default threshold of 13 MB works well for typical main-sequence tracks. For
-grids with very short tracks (e.g. high-mass stars that terminate quickly) the
-history file may be legitimately small — lower the threshold to avoid false
-positives:
+Since the TAMS check is the real completion signal, `--threshold_mb` only exists
+to catch a `history.data` that's missing, empty, or truncated to a near-useless
+stub — it's a corruption floor, not a completeness check. The default (5 MB) is
+already permissive enough for short legitimate tracks (e.g. high-mass stars that
+terminate quickly), so you generally shouldn't need to touch it. Note that a task
+missing its `grid_TAMS/TAMS_*.mod` save file is always reported as failed
+regardless of this setting, since that means the track never reached a real
+termination, no matter how much `history.data` it accumulated.
+
+Raise it if you want a stricter sanity floor for a particular grid:
 
 ```bash
 python -m generate_star_grid.submit_grid check-failed \
     --dest /path/to/batch_dir --keys M,Y,Z,alpha \
-    --threshold_mb 5.0
+    --threshold_mb 10.0
 ```
 
 For grids run via `submit_grid start`, pass `--fail_threshold_mb` to bake the
@@ -97,7 +114,7 @@ threshold into the generated combine/cleanup script:
 ```bash
 python -m generate_star_grid.submit_grid start \
     ... \
-    --fail_threshold_mb 5.0
+    --fail_threshold_mb 10.0
 ```
 
 #### Resubmitting failed tasks manually
