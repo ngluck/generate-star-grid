@@ -422,7 +422,18 @@ else
 fi
 
 echo "Deleting run directories and artifacts..."
-rm -rf "$DEST"/M_*/
+if [ -n "$FAILED" ]; then
+    FAILED_FOLDERS=$(echo "$FAILED" | cut -d'|' -f2)
+    for dir in "$DEST"/M_*/; do
+        folder=$(basename "$dir")
+        if ! echo "$FAILED_FOLDERS" | grep -qx "$folder"; then
+            rm -rf "$dir"
+        fi
+    done
+    echo "Kept M_ directories for still-failed tasks (see notes.txt for details)."
+else
+    rm -rf "$DEST"/M_*/
+fi
 rm -f  "$DEST"/grid_TAMS/TAMS_*.mod
 rm -f  "$DEST"/grid_inlists/inlist_*
 find   "$DEST/LOGS" -type f -delete
