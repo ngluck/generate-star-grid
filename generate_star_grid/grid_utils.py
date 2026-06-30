@@ -672,6 +672,13 @@ def load_history_with_constants_from_profile(
             try:
                 hist_df = pd.read_csv(hist_path, sep=r"\s+", comment="#", skiprows=skiprows_history)
 
+                if "model_number" in hist_df.columns and not hist_df["model_number"].is_monotonic_increasing:
+                    hist_df = (
+                        hist_df.drop_duplicates(subset=["model_number"], keep="last")
+                        .sort_values("model_number")
+                        .reset_index(drop=True)
+                    )
+
                 constants = {}
                 if constant_columns:
                     if extract_constants_from_dirname:
