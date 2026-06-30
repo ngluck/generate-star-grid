@@ -225,6 +225,13 @@ python -m generate_star_grid.grid_utils \
 The `--array` index must match `--num_points` (array `0-N` for `N+1` points).
 ````
 
+````{tip}
+If a task hits the SLURM `--time` limit before finishing, jobs submitted via
+`submit_grid start`/`expand` automatically resume it from its last MESA
+checkpoint on retry rather than starting over — see
+[Resuming Timed-Out Runs](troubleshooting.md#resuming-timed-out-runs-photo-restart).
+````
+
 Below is a working template for the array job script, reflecting the resource
 allocations used for a 500-track `day`-partition grid:
 
