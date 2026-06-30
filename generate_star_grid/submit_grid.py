@@ -51,7 +51,6 @@ from .grid_utils import (
     parse_param_value,
     resolve_param_key,
 )
-from .patch_batch_for_restart import find_batch_dirs, patch_batch_dir, patch_from_queue_file
 
 _BUILTIN_ALIASES = {
     "mass": "initial_mass", "m": "initial_mass", "initial_mass": "initial_mass",
@@ -746,34 +745,6 @@ def cmd_check_failed(args):
         print(f"{f['task_id']}|{f['folder']}|{param_str}")
 
 
-def cmd_patch_restart(args):
-    """
-    Patch run_array.sh and run_combine_cleanup.sh in already-submitted batch
-    directories to enable photo-restart for timed-out SLURM jobs.
-
-    Use this on grids that were submitted before --restart_photos was added.
-    Run before any jobs time out, or at any point before the combine/retry
-    job fires.
-    """
-    dry_run = args.dry_run
-    if args.queue_file:
-        patch_from_queue_file(Path(args.queue_file), dry_run=dry_run)
-    elif args.parent_dir:
-        parent = Path(args.parent_dir)
-        batch_dirs = find_batch_dirs(parent)
-        if not batch_dirs:
-            print("No batch directories (with run_array.sh) found.")
-            return
-        print(f"Found {len(batch_dirs)} batch director{'y' if len(batch_dirs) == 1 else 'ies'}.")
-        for d in batch_dirs:
-            patch_batch_dir(d, dry_run=dry_run)
-    elif args.batch_dirs:
-        for d in args.batch_dirs:
-            patch_batch_dir(Path(d), dry_run=dry_run)
-    else:
-        sys.exit("Error: provide --queue_file, --parent_dir, or explicit BATCH_DIR arguments.")
-    print("\nDone.")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -860,25 +831,6 @@ if __name__ == "__main__":
     p_check.add_argument("--keys", required=True, help="Comma-separated parameter labels to report, e.g. M,Y,Z,alpha")
     p_check.add_argument("--threshold_mb", type=float, default=13.0)
     p_check.set_defaults(func=cmd_check_failed)
-
-    p_patch = sub.add_parser(
-        "patch-restart",
-        help="Patch already-submitted batch directories to enable photo-restart "
-             "for timed-out runs. Use on grids submitted before --restart_photos was added.",
-    )
-    p_patch_group = p_patch.add_mutually_exclusive_group()
-    p_patch_group.add_argument("--queue_file", default=None,
-                                help="Read parent_dir from this submit_grid queue file and patch "
-                                     "all batch directories found there.")
-    p_patch_group.add_argument("--parent_dir", default=None,
-                                help="Patch every batch directory (containing run_array.sh) "
-                                     "directly inside this directory.")
-    p_patch.add_argument("batch_dirs", nargs="*", metavar="BATCH_DIR",
-                          help="Explicit batch directories to patch (alternative to "
-                               "--queue_file / --parent_dir).")
-    p_patch.add_argument("--dry_run", action="store_true",
-                          help="Print what would be changed without writing anything.")
-    p_patch.set_defaults(func=cmd_patch_restart)
 
     parsed = parser.parse_args()
     parsed.func(parsed)
