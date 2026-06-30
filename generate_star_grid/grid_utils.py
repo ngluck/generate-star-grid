@@ -975,6 +975,22 @@ def update_inlist(
     return template_text
 
 
+def find_latest_photo(run_dir: Path) -> Optional[str]:
+    """
+    Return the filename of the most recent MESA photo in run_dir/photos/, or None if none exist.
+
+    Photos are sorted by modification time so this works regardless of MESA's
+    naming convention (x00500, x500, etc.).
+    """
+    photos_dir = run_dir / "photos"
+    if not photos_dir.is_dir():
+        return None
+    photos = [p for p in photos_dir.iterdir() if p.is_file()]
+    if not photos:
+        return None
+    return max(photos, key=lambda p: p.stat().st_mtime).name
+
+
 def collect_profile_files(run_dir: Path, mesa_dir: Path, log_dir_name: str) -> None:
     """
     Copy MESA profile output from run_dir/DATA into grid_profiles/<log_dir_name>/.
@@ -1005,7 +1021,8 @@ def collect_profile_files(run_dir: Path, mesa_dir: Path, log_dir_name: str) -> N
 
 
 def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: Path,
-                    param_formats: Optional[dict] = None, param_registry: Optional[dict] = None) -> None:
+                    param_formats: Optional[dict] = None, param_registry: Optional[dict] = None,
+                    restart_photos: bool = False) -> None:
     """
     Set up a run directory for a single MESA model and execute it.
 
@@ -1027,6 +1044,10 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
         param_registry: Dict like PARAM_FORMAT (label/fmt/inlist_key per key).
             Defaults to PARAM_FORMAT; pass an extended copy to include extra
             (non-built-in) parameters.
+        restart_photos: If True, check for an existing MESA photo in run_dir/photos/
+            and restart from the most recent one (via ./re) rather than starting
+            from scratch. Falls back to ./rn if no photos are found or ./re is
+            unavailable. The log file is opened in append mode when restarting.
     """
     log_dir_name = make_run_dir_name(params, param_formats, param_registry)
     run_dir = mesa_dir / log_dir_name
@@ -1040,17 +1061,29 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
     with open(inlist_path, "w") as f:
         f.write(updated_text)
 
-    for fname in ["rn", "star", "inlist", "inlist_pgstar", "profile_columns.list", "history_columns.list"]:
+    for fname in ["rn", "re", "star", "inlist", "inlist_pgstar", "profile_columns.list", "history_columns.list"]:
         src = mesa_dir / fname
         if src.exists():
             shutil.copy(src, run_dir / fname)
         elif fname in ("rn", "star"):
             raise FileNotFoundError(f"Required MESA file '{fname}' not found in {mesa_dir}")
 
-    with open(log_path, "w") as log_file:
+    photo = find_latest_photo(run_dir) if restart_photos else None
+    if restart_photos and photo is None:
+        print(f"  No photos found for {run_dir.name}; starting from scratch.", flush=True)
+    if photo and not (run_dir / "re").exists():
+        print(f"  WARNING: photos found for {run_dir.name} but ./re not found; starting from scratch.", flush=True)
+        photo = None
+
+    cmd = ["./re", photo] if photo else ["./rn"]
+    log_mode = "a" if photo else "w"
+    if photo:
+        print(f"  Restarting {run_dir.name} from photo {photo}.", flush=True)
+
+    with open(log_path, log_mode) as log_file:
         try:
             subprocess.run(
-                ["./rn"], cwd=run_dir, stdout=log_file, stderr=subprocess.STDOUT, text=True, check=True
+                cmd, cwd=run_dir, stdout=log_file, stderr=subprocess.STDOUT, text=True, check=True
             )
         except subprocess.CalledProcessError as e:
             print(f"MESA run failed for {run_dir} (exit code {e.returncode})")
@@ -1076,14 +1109,14 @@ def task_wrapper(args: tuple) -> None:
     Unpack args and run a single MESA model; for use with ProcessPoolExecutor.
 
     Args:
-        args: Tuple of (params, template_file, mesa_dir, param_formats, param_registry).
+        args: Tuple of (params, template_file, mesa_dir, param_formats, param_registry, restart_photos).
     """
-    params, template_file, mesa_dir, param_formats, param_registry = args
+    params, template_file, mesa_dir, param_formats, param_registry, restart_photos = args
     log_dir_name = make_run_dir_name(params, param_formats, param_registry)
     logs_dir = mesa_dir / "LOGS"
     logs_dir.mkdir(exist_ok=True)
     run_mesa_model(template_file, mesa_dir, params, logs_dir / f"log_{log_dir_name}.txt",
-                    param_formats, param_registry)
+                    param_formats, param_registry, restart_photos)
 
 
 def run_grid(
@@ -1092,6 +1125,7 @@ def run_grid(
     num_points: int = 8,
     max_workers: int = 2,
     param_registry: Optional[dict] = None,
+    restart_photos: bool = False,
 ) -> None:
     """
     Build MESA, generate the parameter grid, and run all models in parallel.
@@ -1106,6 +1140,9 @@ def run_grid(
         param_registry: Dict like PARAM_FORMAT (label/fmt/inlist_key per key).
             Defaults to PARAM_FORMAT; pass an extended copy to include extra
             (non-built-in) parameters added via --param.
+        restart_photos: If True, restart each model from its latest MESA photo
+            if one exists (see run_mesa_model). Falls back to a fresh run when
+            no photos are found.
     """
     this_grid_dir = Path.cwd()
     print("Building MESA...", flush=True)
@@ -1123,7 +1160,7 @@ def run_grid(
                       param_registry=param_registry)
 
     args_list = [
-        (p, this_grid_dir / "inlist_template", this_grid_dir, param_formats, param_registry)
+        (p, this_grid_dir / "inlist_template", this_grid_dir, param_formats, param_registry, restart_photos)
         for p in param_dicts
     ]
 
@@ -1166,6 +1203,11 @@ if __name__ == "__main__":
     parser.add_argument("--grid_type", choices=["linear", "sobol"], default="linear")
     parser.add_argument("--num_points", type=int, default=8)
     parser.add_argument("--max_workers", type=int, default=1)
+    parser.add_argument("--restart_photos", action="store_true",
+                        help="Restart each run from the most recent MESA photo in its "
+                             "photos/ directory rather than starting from scratch. Falls "
+                             "back to a fresh run when no photos are found or ./re is "
+                             "unavailable. Use this to resume timed-out SLURM jobs.")
     parser.add_argument("--task_id", type=int, default=None,
                         help="SLURM array task index: runs only this one parameter set.")
     args = parser.parse_args()
@@ -1225,6 +1267,7 @@ if __name__ == "__main__":
             logs_dir / f"log_{log_dir_name}.txt",
             param_formats,
             param_registry,
+            args.restart_photos,
         )
 
     else:
@@ -1234,6 +1277,7 @@ if __name__ == "__main__":
             num_points=args.num_points,
             max_workers=args.max_workers,
             param_registry=param_registry,
+            restart_photos=args.restart_photos,
         )
 
     print(f"Done at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.")

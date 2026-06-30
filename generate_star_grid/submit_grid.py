@@ -51,6 +51,7 @@ from .grid_utils import (
     parse_param_value,
     resolve_param_key,
 )
+from .patch_batch_for_restart import find_batch_dirs, patch_batch_dir, patch_from_queue_file
 
 _BUILTIN_ALIASES = {
     "mass": "initial_mass", "m": "initial_mass", "initial_mass": "initial_mass",
@@ -222,6 +223,7 @@ def cmd_start(args):
         "combine_mail_type": args.combine_mail_type,
         "retry_once": not args.no_retry,
         "fail_threshold_mb": args.fail_threshold_mb,
+        "restart_photos": args.restart_photos,
         "merge_after": not args.no_merge_after,
         "merge_time": args.merge_time,
         "merge_mem": args.merge_mem,
@@ -316,7 +318,10 @@ def _write_and_submit_batch(queue_file: Path, config: dict, batch: dict) -> None
     else:
         array_spec = f"0-{inner_count - 1}"
 
-    python_inv = " \\\n    ".join([f'"{python}" -m generate_star_grid.grid_utils'] + fixed_args + config["inner_cli_args"])
+    extra_flags = ["--restart_photos"] if config.get("restart_photos", False) else []
+    python_inv = " \\\n    ".join(
+        [f'"{python}" -m generate_star_grid.grid_utils'] + fixed_args + config["inner_cli_args"] + extra_flags
+    )
 
     run_array = dest / "run_array.sh"
     run_array.write_text(f"""#!/bin/bash
@@ -350,6 +355,20 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_TH
     constants_keys_spc = " ".join(
         _label_for_key(k, registry) for k in batch.keys()
     )
+
+    # When --restart_photos is set, preserve DATA/ and photos/ so MESA can
+    # restart from the checkpoint rather than starting from scratch again.
+    if config.get("restart_photos", False):
+        retry_data_prep = '    echo "Preserving DATA/ and photos/ for photo restart."'
+    else:
+        retry_data_prep = (
+            '    echo "Clearing DATA/ for failed runs before retry..."\n'
+            '    echo "$FAILED" | while IFS=\'|\' read -r tid folder params; do\n'
+            '        rm -rf "$DEST/$folder/DATA"\n'
+            '        mkdir -p "$DEST/$folder/DATA"\n'
+            '    done'
+        )
+
     run_combine = dest / "run_combine_cleanup.sh"
     run_combine.write_text(f"""#!/bin/bash
 #SBATCH --job-name=combine_{job_label}
@@ -378,11 +397,7 @@ if [ -n "$FAILED" ] && [ "$RETRY_DONE" -eq 0 ] && [ "{1 if config['retry_once'] 
     echo "Failed tasks detected:"
     echo "$FAILED"
 
-    echo "Clearing DATA/ for failed runs before retry..."
-    echo "$FAILED" | while IFS='|' read -r tid folder params; do
-        rm -rf "$DEST/$folder/DATA"
-        mkdir -p "$DEST/$folder/DATA"
-    done
+{retry_data_prep}
 
     FAILED_IDS=$(echo "$FAILED" | cut -d'|' -f1 | paste -sd, -)
     echo "Retrying failed tasks once: $FAILED_IDS"
@@ -676,6 +691,7 @@ def cmd_expand(args):
         "combine_mail_type": args.combine_mail_type,
         "retry_once": not args.no_retry,
         "fail_threshold_mb": args.fail_threshold_mb,
+        "restart_photos": args.restart_photos,
         "merge_after": not args.no_merge_after,
         "merge_time": args.merge_time,
         "merge_mem": args.merge_mem,
@@ -744,6 +760,35 @@ def cmd_check_failed(args):
         print(f"{f['task_id']}|{f['folder']}|{param_str}")
 
 
+def cmd_patch_restart(args):
+    """
+    Patch run_array.sh and run_combine_cleanup.sh in already-submitted batch
+    directories to enable photo-restart for timed-out SLURM jobs.
+
+    Use this on grids that were submitted before --restart_photos was added.
+    Run before any jobs time out, or at any point before the combine/retry
+    job fires.
+    """
+    dry_run = args.dry_run
+    if args.queue_file:
+        patch_from_queue_file(Path(args.queue_file), dry_run=dry_run)
+    elif args.parent_dir:
+        parent = Path(args.parent_dir)
+        batch_dirs = find_batch_dirs(parent)
+        if not batch_dirs:
+            print("No batch directories (with run_array.sh) found.")
+            return
+        print(f"Found {len(batch_dirs)} batch director{'y' if len(batch_dirs) == 1 else 'ies'}.")
+        for d in batch_dirs:
+            patch_batch_dir(d, dry_run=dry_run)
+    elif args.batch_dirs:
+        for d in args.batch_dirs:
+            patch_batch_dir(Path(d), dry_run=dry_run)
+    else:
+        sys.exit("Error: provide --queue_file, --parent_dir, or explicit BATCH_DIR arguments.")
+    print("\nDone.")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -772,6 +817,11 @@ if __name__ == "__main__":
     p_start.add_argument("--combine_mail_type", default="ALL")
     p_start.add_argument("--no_retry", action="store_true", help="Disable the retry-once-on-failure behavior.")
     p_start.add_argument("--fail_threshold_mb", type=float, default=13.0)
+    p_start.add_argument("--restart_photos", action="store_true",
+                          help="Restart timed-out runs from the most recent MESA photo rather than "
+                               "starting from scratch. When set, the retry pass preserves each "
+                               "failed run's DATA/ and photos/ so MESA can continue from its "
+                               "last checkpoint. Falls back to a fresh run if no photos exist.")
     p_start.add_argument("--no_merge_after", action="store_true",
                           help="Skip the final merge step that combines all per-batch HDF5 files into one.")
     p_start.add_argument("--merge_time", default="4:00:00",
@@ -812,6 +862,11 @@ if __name__ == "__main__":
     p_expand.add_argument("--combine_mail_type", default="ALL")
     p_expand.add_argument("--no_retry", action="store_true")
     p_expand.add_argument("--fail_threshold_mb", type=float, default=13.0)
+    p_expand.add_argument("--restart_photos", action="store_true",
+                           help="Restart timed-out runs from the most recent MESA photo rather than "
+                                "starting from scratch. When set, the retry pass preserves each "
+                                "failed run's DATA/ and photos/ so MESA can continue from its "
+                                "last checkpoint. Falls back to a fresh run if no photos exist.")
     p_expand.add_argument("--no_merge_after", action="store_true")
     p_expand.add_argument("--merge_time", default="4:00:00")
     p_expand.add_argument("--merge_mem", default="32G")
@@ -829,6 +884,25 @@ if __name__ == "__main__":
     p_check.add_argument("--keys", required=True, help="Comma-separated parameter labels to report, e.g. M,Y,Z,alpha")
     p_check.add_argument("--threshold_mb", type=float, default=13.0)
     p_check.set_defaults(func=cmd_check_failed)
+
+    p_patch = sub.add_parser(
+        "patch-restart",
+        help="Patch already-submitted batch directories to enable photo-restart "
+             "for timed-out runs. Use on grids submitted before --restart_photos was added.",
+    )
+    p_patch_group = p_patch.add_mutually_exclusive_group()
+    p_patch_group.add_argument("--queue_file", default=None,
+                                help="Read parent_dir from this submit_grid queue file and patch "
+                                     "all batch directories found there.")
+    p_patch_group.add_argument("--parent_dir", default=None,
+                                help="Patch every batch directory (containing run_array.sh) "
+                                     "directly inside this directory.")
+    p_patch.add_argument("batch_dirs", nargs="*", metavar="BATCH_DIR",
+                          help="Explicit batch directories to patch (alternative to "
+                               "--queue_file / --parent_dir).")
+    p_patch.add_argument("--dry_run", action="store_true",
+                          help="Print what would be changed without writing anything.")
+    p_patch.set_defaults(func=cmd_patch_restart)
 
     parsed = parser.parse_args()
     parsed.func(parsed)
