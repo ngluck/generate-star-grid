@@ -147,11 +147,17 @@ written to the batch's `combine_<jobid>.out` stdout file.
 
 ## Preserved Directories for Persistent Failures
 
-If a task still fails after the one retry, its `M_*` run directory is **not** deleted
-during cleanup. All other successfully-completed run directories are removed as usual.
-This lets you inspect the history files, MESA output, and any individual log files
-inside the kept directory to diagnose what went wrong. The corresponding entry in
-`notes.txt` records the task ID, folder name, and initial conditions.
+If a task still fails after the one retry, two things happen:
+
+- Its `M_*` run directory is **not** deleted during cleanup, so you can inspect
+  the history files, MESA output, and any individual log files to diagnose what
+  went wrong.
+- It is **excluded from `combined_history.hdf5`** — the combine job passes the
+  still-failed folder names to `make_grid --exclude_dirs`, so the exclusion is
+  enforced in the HDF5, not just noted in `notes.txt`.
+
+The corresponding entry in `notes.txt` records the task ID, folder name, and
+initial conditions.
 
 ## Expanding an Existing Grid
 
