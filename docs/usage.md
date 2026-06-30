@@ -225,6 +225,39 @@ python -m generate_star_grid.grid_utils \
 The `--array` index must match `--num_points` (array `0-N` for `N+1` points).
 ````
 
+Below is a working template for the array job script, reflecting the resource
+allocations used for a 500-track `day`-partition grid:
+
+````bash
+#!/bin/bash
+#SBATCH --job-name=mesa_grid
+#SBATCH --array=0-499
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --partition=day
+#SBATCH --nodes=1
+#SBATCH --time=12:00:00
+#SBATCH --mem=8G
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=your@email.edu
+#SBATCH --output=/path/to/batch_dir/slurm_%A_%a.out
+
+cd "/path/to/batch_dir" || { echo "FATAL: cannot cd to /path/to/batch_dir" >&2; exit 1; }
+
+module purge
+module load miniconda
+conda activate my_env
+
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+
+python -m generate_star_grid.grid_utils \
+    --initial_Z 0.014 \
+    --mass 0.7:1.2 \
+    --grid_type linear \
+    --num_points 500 \
+    --task_id=$SLURM_ARRAY_TASK_ID
+````
+
 ## Continuation Runs (Post-MS Evolution)
 
 To resume from TAMS save files and continue evolution:
