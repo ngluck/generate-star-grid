@@ -37,3 +37,16 @@ pip install -e /path/to/generate-star-grid
 ```
 
 You only need to do this once per environment. After that, `python -m generate_star_grid.grid_utils` works from any directory.
+
+````{note}
+If you skip `pip install -e .` and run directly from the cloned directory, Python
+won't find the package unless you add it to your path manually:
+
+```bash
+export PYTHONPATH=/path/to/generate-star-grid:$PYTHONPATH
+```
+
+Add this line to your `~/.bashrc` (or `~/.zshrc`) to make it permanent. The
+`pip install -e .` approach is recommended instead, as it avoids having to set
+this in every new shell or SLURM job.
+````
