@@ -251,3 +251,26 @@ It:
 The result is a single merged directory containing all original and new per-batch
 subdirectories alongside the combined `combined_history.hdf5` covering the full
 expanded parameter space.
+
+## Continuation Runs (Post-MS Evolution)
+
+To resume from TAMS save files and continue evolution:
+
+````bash
+cd my_grid_run/
+python -m generate_star_grid.grid_utils_cont \
+    --min_mass 0.7 --max_mass 1.2 \
+    --grid_type linear --num_points 200 \
+    --max_workers 8 \
+    --resume \
+    --resume_edit_path /path/to/update_inlist.py
+````
+
+The `--resume_edit_path` script must define:
+- `resume_tag` (str): appended to archived inlist filenames
+- `modifications` (list of callables): each takes `(inlist_text, params)` and returns modified text
+
+````{note}
+`grid_utils_cont` accepts the same `--mass`, `--initial_Z`/`--initial_Y`/`--alpha_MLT`,
+`--param`, `--dry_run`, and `--avg_data_mb` flags as `grid_utils`.
+````
