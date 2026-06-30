@@ -76,6 +76,28 @@ This is also the function the combine/cleanup job calls internally to detect
 failures before retrying and again after the retry to decide which tasks to
 exclude from `combined_history.hdf5`.
 
+#### Tuning the failure threshold
+
+The default threshold of 13 MB works well for typical main-sequence tracks. For
+grids with very short tracks (e.g. high-mass stars that terminate quickly) the
+history file may be legitimately small — lower the threshold to avoid false
+positives:
+
+```bash
+python -m generate_star_grid.submit_grid check-failed \
+    --dest /path/to/batch_dir --keys M,Y,Z,alpha \
+    --threshold_mb 5.0
+```
+
+For grids run via `submit_grid start`, pass `--fail_threshold_mb` to bake the
+threshold into the generated combine/cleanup script:
+
+```bash
+python -m generate_star_grid.submit_grid start \
+    ... \
+    --fail_threshold_mb 5.0
+```
+
 #### Resubmitting failed tasks manually
 
 To resubmit only the failed task IDs as a new array job:
@@ -94,3 +116,24 @@ done
 
 sbatch --array=$FAILED_IDS /path/to/batch_dir/run_array.sh
 ````
+
+## Common MESA Failure Modes
+
+When a task fails, the most useful first step is to look at the SLURM output
+file for that task (`slurm_<jobid>_<taskid>.out` in the batch directory, if it
+hasn't been cleaned up) and the MESA terminal output it contains.
+
+Common causes of convergence failure include:
+
+- **High mass at low or high metallicity** — MESA's solver can struggle near the
+  edges of parameter space. Failures tend to cluster at the upper end of a mass
+  sweep (e.g. M > 1.15 M☉) when Z is very low or very high.
+- **Timestep or mesh convergence** — MESA reports these as repeated retries
+  before terminating. Tightening `varcontrol_target` or `mesh_delta_coeff` in
+  `inlist_template` can help, at the cost of longer run times.
+- **Pre-main-sequence relaxation** — failures early in the run (before ZAMS)
+  are often caused by `pre_ms_T_c` being too low or too high for the chosen mass.
+
+For detailed guidance on MESA error messages and convergence controls, see the
+[MESA documentation](https://docs.mesastar.org) and the
+[MESA FAQs on the MESA forums](https://lists.mesastar.org).

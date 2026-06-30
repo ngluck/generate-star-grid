@@ -57,6 +57,55 @@ The number of decimal places for each value is chosen automatically so every
 grid point gets a unique label. A `notes.txt` file records which parameters
 were held constant, which were swept, and the format used for each.
 
+## `inlist_template` Format
+
+`grid_utils` works by **substituting** values into lines that already exist in
+`inlist_template` — it does not insert new lines. Every parameter you want to
+sweep or fix must already appear in the file with a placeholder value. The key
+lines are:
+
+```fortran
+&controls
+    initial_mass = 0.7000      ! swept via --mass
+    initial_z = 0.0200         ! swept via --initial_Z
+    initial_y = 0.2700         ! swept via --initial_Y
+    mixing_length_alpha = 2.0  ! swept via --alpha_MLT
+    log_directory = 'DATA'     ! always overridden to 'DATA'
+    save_model_filename = 'TAMS_0.70.mod'  ! always overridden per run
+```
+
+Any other parameter you want to sweep via `--param KEY=SPEC` must also be
+present as a line in the file. Array-indexed parameters use standard Fortran
+notation, e.g. `overshoot_f(1) = 0.01`.
+
+````{note}
+`log_directory` and `save_model_filename` are always overridden automatically —
+you do not need to set them correctly in the template.
+````
+
+## Disk Space Guidance
+
+The dry run prints an estimated disk usage based on `--avg_data_mb` (default:
+20 MB per model). Real-world usage from typical main-sequence grids:
+
+| Grid size | Approx. disk usage |
+|---|---|
+| 16 tracks (local test) | ~320 MB |
+| 500 tracks (one batch) | ~10 GB |
+| 500 tracks × 10 Z values (multi-batch) | ~10 GB peak (one batch at a time) |
+
+Peak usage for multi-batch grids is bounded by a single batch — completed
+batches are cleaned up before the next one starts. After `combined_history.hdf5`
+is written, the per-model `DATA/` folders are deleted, leaving only the HDF5
+(typically 1–3 GB per 500-track batch).
+
+If your models run significantly longer or shorter than a typical main-sequence
+track, override the estimate with `--avg_data_mb`:
+
+```bash
+python -m generate_star_grid.grid_utils ... --avg_data_mb 50 --dry_run
+```
+
 ## Saved Profile Files (`grid_profiles/`)
 
 If a model's `DATA/` contains any `profile*.data` files, they are copied —

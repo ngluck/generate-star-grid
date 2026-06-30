@@ -17,7 +17,7 @@ my_grid_run/
 ````
 
 ````{tip}
-See [`examples/inlist_template`](https://github.com/ngluck/generate-star-grid/blob/main/examples/inlist_template) for a reference inlist.
+See [`examples/inlist_template`](https://github.com/ngluck/generate-star-grid/blob/main/examples/inlist_template) for a reference inlist. For details on the required format and disk space expectations, see [Output Structure](output.md#inlist-template-format).
 ````
 
 The template uses standard Fortran namelist syntax; `grid_utils` substitutes values for:

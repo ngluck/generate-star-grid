@@ -20,7 +20,9 @@ my_grid/
 ```
 
 See [`examples/inlist_template`](https://github.com/ngluck/generate-star-grid/blob/main/examples/inlist_template)
-for a reference inlist showing the expected placeholder format.
+for a reference inlist showing the expected placeholder format. For details on
+the required format and disk space expectations, see
+[Output Structure](output.md#inlist-template-format).
 
 ## 2. Preview the Grid (Dry Run)
 
