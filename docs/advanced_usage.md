@@ -145,6 +145,14 @@ immediately distinguishable in `squeue`, `sacct`, and SLURM notification email s
 lines. The full list of retried task IDs, folders, and initial conditions is always
 written to the batch's `combine_<jobid>.out` stdout file.
 
+## Preserved Directories for Persistent Failures
+
+If a task still fails after the one retry, its `M_*` run directory is **not** deleted
+during cleanup. All other successfully-completed run directories are removed as usual.
+This lets you inspect the history files, MESA output, and any individual log files
+inside the kept directory to diagnose what went wrong. The corresponding entry in
+`notes.txt` records the task ID, folder name, and initial conditions.
+
 ## Expanding an Existing Grid
 
 If you have a finished merged grid and want to add new outer-parameter combinations
