@@ -223,7 +223,6 @@ def cmd_start(args):
         "combine_mail_type": args.combine_mail_type,
         "retry_once": not args.no_retry,
         "fail_threshold_mb": args.fail_threshold_mb,
-        "restart_photos": args.restart_photos,
         "merge_after": not args.no_merge_after,
         "merge_time": args.merge_time,
         "merge_mem": args.merge_mem,
@@ -318,9 +317,8 @@ def _write_and_submit_batch(queue_file: Path, config: dict, batch: dict) -> None
     else:
         array_spec = f"0-{inner_count - 1}"
 
-    extra_flags = ["--restart_photos"] if config.get("restart_photos", False) else []
     python_inv = " \\\n    ".join(
-        [f'"{python}" -m generate_star_grid.grid_utils'] + fixed_args + config["inner_cli_args"] + extra_flags
+        [f'"{python}" -m generate_star_grid.grid_utils'] + fixed_args + config["inner_cli_args"] + ["--restart_photos"]
     )
 
     run_array = dest / "run_array.sh"
@@ -356,18 +354,7 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_TH
         _label_for_key(k, registry) for k in batch.keys()
     )
 
-    # When --restart_photos is set, preserve DATA/ and photos/ so MESA can
-    # restart from the checkpoint rather than starting from scratch again.
-    if config.get("restart_photos", False):
-        retry_data_prep = '    echo "Preserving DATA/ and photos/ for photo restart."'
-    else:
-        retry_data_prep = (
-            '    echo "Clearing DATA/ for failed runs before retry..."\n'
-            '    echo "$FAILED" | while IFS=\'|\' read -r tid folder params; do\n'
-            '        rm -rf "$DEST/$folder/DATA"\n'
-            '        mkdir -p "$DEST/$folder/DATA"\n'
-            '    done'
-        )
+    retry_data_prep = '    echo "Preserving DATA/ and photos/ for photo restart."'
 
     run_combine = dest / "run_combine_cleanup.sh"
     run_combine.write_text(f"""#!/bin/bash
@@ -691,7 +678,6 @@ def cmd_expand(args):
         "combine_mail_type": args.combine_mail_type,
         "retry_once": not args.no_retry,
         "fail_threshold_mb": args.fail_threshold_mb,
-        "restart_photos": args.restart_photos,
         "merge_after": not args.no_merge_after,
         "merge_time": args.merge_time,
         "merge_mem": args.merge_mem,
@@ -817,11 +803,6 @@ if __name__ == "__main__":
     p_start.add_argument("--combine_mail_type", default="ALL")
     p_start.add_argument("--no_retry", action="store_true", help="Disable the retry-once-on-failure behavior.")
     p_start.add_argument("--fail_threshold_mb", type=float, default=13.0)
-    p_start.add_argument("--restart_photos", action="store_true",
-                          help="Restart timed-out runs from the most recent MESA photo rather than "
-                               "starting from scratch. When set, the retry pass preserves each "
-                               "failed run's DATA/ and photos/ so MESA can continue from its "
-                               "last checkpoint. Falls back to a fresh run if no photos exist.")
     p_start.add_argument("--no_merge_after", action="store_true",
                           help="Skip the final merge step that combines all per-batch HDF5 files into one.")
     p_start.add_argument("--merge_time", default="4:00:00",
@@ -862,11 +843,6 @@ if __name__ == "__main__":
     p_expand.add_argument("--combine_mail_type", default="ALL")
     p_expand.add_argument("--no_retry", action="store_true")
     p_expand.add_argument("--fail_threshold_mb", type=float, default=13.0)
-    p_expand.add_argument("--restart_photos", action="store_true",
-                           help="Restart timed-out runs from the most recent MESA photo rather than "
-                                "starting from scratch. When set, the retry pass preserves each "
-                                "failed run's DATA/ and photos/ so MESA can continue from its "
-                                "last checkpoint. Falls back to a fresh run if no photos exist.")
     p_expand.add_argument("--no_merge_after", action="store_true")
     p_expand.add_argument("--merge_time", default="4:00:00")
     p_expand.add_argument("--merge_mem", default="32G")
