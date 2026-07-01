@@ -164,6 +164,7 @@ def merge_batch_hdf5(
     total_rows = 0
     track_offset = 0
     n_batches = len(batch_dirs)
+    canonical_cols = None
 
     with pd.HDFStore(str(output_path), mode="w", complevel=5, complib="blosc") as out_store:
         for i, batch_dir in enumerate(batch_dirs):
@@ -185,6 +186,23 @@ def merge_batch_hdf5(
                     if batch_max_track is None or chunk_max > batch_max_track:
                         batch_max_track = chunk_max
                     chunk["Track"] = chunk["Track"] + track_offset
+
+                    # Batches can have identical column sets but different physical
+                    # column order (e.g. 'Track' before 'Z' in some, after in others),
+                    # which breaks PyTables' block-matching on append. Pin every
+                    # batch to the first batch's column order rather than relying
+                    # on source files already agreeing.
+                    if canonical_cols is None:
+                        canonical_cols = list(chunk.columns)
+                    elif set(chunk.columns) != set(canonical_cols):
+                        raise ValueError(
+                            f"{hdf5_path} has columns {sorted(chunk.columns)} "
+                            f"which do not match the first batch's columns "
+                            f"{sorted(canonical_cols)}. Reconcile schemas before merging."
+                        )
+                    else:
+                        chunk = chunk[canonical_cols]
+
                     out_store.append(hdf5_key, chunk, format="table")
                     total_rows += len(chunk)
 
