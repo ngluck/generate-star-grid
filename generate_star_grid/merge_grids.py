@@ -351,9 +351,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    sub = parser.add_subparsers(dest="command")
+    sub = parser.add_subparsers(dest="command", required=True)
 
-    # ----- merge (default, backwards-compatible) -----
+    # ----- merge -----
     p_merge = sub.add_parser("merge", help="Merge per-batch HDF5s into one merged grid.")
     source = p_merge.add_mutually_exclusive_group(required=True)
     source.add_argument("--queue_file", help="Path to submit_grid queue.json.")
@@ -374,19 +374,4 @@ if __name__ == "__main__":
     p_expand.set_defaults(func=cmd_expand)
 
     parsed = parser.parse_args()
-
-    # Backwards compatibility: if no subcommand given, fall through to cmd_merge
-    # using the old flat argument style (--queue_file / --batch_dirs at top level).
-    if parsed.command is None:
-        parser_legacy = argparse.ArgumentParser()
-        source = parser_legacy.add_mutually_exclusive_group(required=True)
-        source.add_argument("--queue_file")
-        source.add_argument("--batch_dirs", nargs="+", metavar="DIR")
-        parser_legacy.add_argument("--output_dir")
-        parser_legacy.add_argument("--hdf5_filename", default="combined_history.hdf5")
-        parser_legacy.add_argument("--hdf5_key", default="history")
-        parser_legacy.add_argument("--dry_run", action="store_true")
-        parsed = parser_legacy.parse_args()
-        cmd_merge(parsed)
-    else:
-        parsed.func(parsed)
+    parsed.func(parsed)
