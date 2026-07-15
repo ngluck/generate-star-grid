@@ -29,9 +29,46 @@ PARAM_FORMAT = {
 # parse_param_value/coerce_cli_values for the implementation.
 VALUE_SPEC_HELP = (
     "VALUE (constant), V1,V2,... (explicit values), MIN:MAX (continuous "
-    "range, uses --num_points/--grid_type), or MIN:MAX:STEP (explicit "
-    "values spaced by STEP, inclusive of both ends)."
+    "range, uses --num_points/--grid_type), MIN:MAX:STEP (explicit "
+    "values spaced by STEP, inclusive of both ends), or MIN:MAX:log "
+    "(continuous range sampled evenly in log10 space; MIN and MAX must be "
+    "positive)."
 )
+
+
+class LogRange(tuple):
+    """A ``(min, max)`` continuous range to be sampled evenly in log10 space.
+
+    Subclasses ``tuple`` so it passes every ``isinstance(spec, tuple)`` check
+    in the grid machinery -- it is treated as an ordinary continuous sweep
+    everywhere except in the sampling and format-selection helpers below, which
+    special-case it to space points geometrically rather than linearly.
+    """
+
+    __slots__ = ()
+
+    def __new__(cls, lo, hi):
+        if lo <= 0 or hi <= 0:
+            raise ValueError(f"LogRange endpoints must be positive, got ({lo}, {hi}).")
+        return super().__new__(cls, (float(lo), float(hi)))
+
+
+def _sample_range_linspace(spec, num_points):
+    """Evenly-spaced sweep values for a range spec: geometric for a LogRange,
+    arithmetic (np.linspace) for a plain (min, max) tuple."""
+    lo, hi = spec
+    if isinstance(spec, LogRange):
+        return np.logspace(np.log10(lo), np.log10(hi), num_points)
+    return np.linspace(lo, hi, num_points)
+
+
+def _sample_range_unit(spec, u):
+    """Map Sobol unit-interval samples ``u`` (in [0, 1)) into a range spec:
+    log-scaled for a LogRange, linearly for a plain (min, max) tuple."""
+    lo, hi = spec
+    if isinstance(spec, LogRange):
+        return 10.0 ** (np.log10(lo) + u * (np.log10(hi) - np.log10(lo)))
+    return lo + u * (hi - lo)
 
 
 def _min_decimals_for_value(value: float, min_decimals: int = 1, max_decimals: int = 10) -> int:
@@ -165,7 +202,10 @@ def compute_param_formats(
             if num_points <= 1 or lo == hi:
                 d = _min_decimals_for_value(lo, min_decimals, max_decimals)
             else:
-                values = np.linspace(lo, hi, num_points)
+                # Geometric spacing for a LogRange, arithmetic otherwise. For
+                # a log range this picks enough decimals to distinguish the
+                # closely-packed small-value end (e.g. Z near 1e-4).
+                values = _sample_range_linspace(spec, num_points)
                 d = _min_decimals_for_unique(values, min_decimals, max_decimals)
         elif isinstance(spec, list):
             # Use enough decimals to represent every listed value exactly (not
@@ -268,13 +308,19 @@ def write_grid_notes(
     lines.append("Swept parameter(s):")
     if not swept_continuous and not swept_discrete:
         lines.append("  (none)")
-    for key, (lo, hi) in swept_continuous.items():
+    for key, rng in swept_continuous.items():
+        lo, hi = rng
         spec = registry[key]
         fmt = param_formats.get(key, spec["fmt"])
-        line = f"  {key} ({spec['label']}): {lo} to {hi}, {num_points} points"
+        scale = " (log-spaced)" if isinstance(rng, LogRange) else ""
+        line = f"  {key} ({spec['label']}): {lo} to {hi}, {num_points} points{scale}"
         if num_points > 1 and lo != hi:
-            spacing = (hi - lo) / (num_points - 1)
-            line += f", spacing = {spacing:{fmt}}"
+            if isinstance(rng, LogRange):
+                factor = (hi / lo) ** (1.0 / (num_points - 1))
+                line += f", x{factor:.4g} per step"
+            else:
+                spacing = (hi - lo) / (num_points - 1)
+                line += f", spacing = {spacing:{fmt}}"
         line += f", directory format = '{fmt}'"
         lines.append(line)
     for key, values in swept_discrete.items():
@@ -342,12 +388,18 @@ def print_grid_dry_run(
     print("\nSwept parameters:")
     if not continuous and not discrete:
         print("  (none)")
-    for key, (lo, hi) in continuous.items():
+    for key, rng in continuous.items():
+        lo, hi = rng
         spec = registry[key]
-        line = f"  {key} ({spec['label']}): {lo} to {hi}, {num_points} points ({grid_type})"
+        scale = "log-spaced" if isinstance(rng, LogRange) else grid_type
+        line = f"  {key} ({spec['label']}): {lo} to {hi}, {num_points} points ({scale})"
         if num_points > 1 and lo != hi:
-            spacing = (hi - lo) / (num_points - 1)
-            line += f", spacing ~ {spacing:.6g}"
+            if isinstance(rng, LogRange):
+                factor = (hi / lo) ** (1.0 / (num_points - 1))
+                line += f", x{factor:.4g} per step ({np.log10(hi / lo):.2g} OOM)"
+            else:
+                spacing = (hi - lo) / (num_points - 1)
+                line += f", spacing ~ {spacing:.6g}"
         print(line)
     for key, values in discrete.items():
         spec = registry[key]
@@ -545,7 +597,7 @@ def coerce_cli_values(values: list) -> Union[float, tuple, list]:
     except ValueError:
         raise ValueError(
             f"Invalid value(s) {values}: expected one or more plain numbers, "
-            f"or a single 'MIN:MAX', 'MIN:MAX:STEP', or 'V1,V2,...' spec."
+            f"or a single 'MIN:MAX', 'MIN:MAX:STEP', 'MIN:MAX:log', or 'V1,V2,...' spec."
         )
     return floats[0] if len(floats) == 1 else floats
 
@@ -557,6 +609,8 @@ def parse_param_value(spec_str: str) -> Union[float, tuple, list]:
     - ``'VALUE'`` -> ``float(VALUE)`` (constant)
     - ``'MIN:MAX'`` -> ``(float(MIN), float(MAX))`` (continuous sweep, uses
       --num_points/--grid_type)
+    - ``'MIN:MAX:log'`` -> ``LogRange(MIN, MAX)`` (continuous sweep spaced
+      evenly in log10 space; MIN and MAX must be positive)
     - ``'MIN:MAX:STEP'`` -> ``[v0, v1, ..., MAX]`` (explicit values spaced by
       STEP, inclusive of both ends; see _expand_range)
     - ``'V1,V2,...'`` -> ``[float(V1), float(V2), ...]`` (explicit values)
@@ -568,8 +622,12 @@ def parse_param_value(spec_str: str) -> Union[float, tuple, list]:
             return (float(lo), float(hi))
         if len(parts) == 3:
             lo, hi, step = parts
+            if step.strip().lower() == "log":
+                return LogRange(float(lo), float(hi))
             return _expand_range(float(lo), float(hi), float(step))
-        raise ValueError(f"Invalid range spec '{spec_str}': expected 'MIN:MAX' or 'MIN:MAX:STEP'.")
+        raise ValueError(
+            f"Invalid range spec '{spec_str}': expected 'MIN:MAX', 'MIN:MAX:STEP', or 'MIN:MAX:log'."
+        )
     if "," in spec_str:
         return [float(v) for v in spec_str.split(",")]
     return float(spec_str)
@@ -889,6 +947,10 @@ def generate_grid(param_specs: dict, grid_type: str = "linear", num_points: int 
       - a fixed scalar: held constant across the whole grid.
       - a `(min, max)` tuple: a continuous sweep, sampled at `num_points`
         values via linspace ('linear') or a Sobol sequence ('sobol').
+      - a `LogRange(min, max)`: like the tuple, but sampled evenly in log10
+        space (geometric linspace for 'linear', log-scaled Sobol for 'sobol').
+        Use for parameters spanning several decades, e.g. metallicity, so the
+        low end isn't undersampled.
       - a list of explicit values: a discrete sweep, used as-is. Combined
         with everything else via Cartesian product, e.g. a continuous mass
         sweep at 200 points combined with `initial_z=[0.014, 0.02]` yields
@@ -928,7 +990,7 @@ def generate_grid(param_specs: dict, grid_type: str = "linear", num_points: int 
     if not continuous_keys:
         continuous_dicts = [{}]
     elif grid_type == "linear":
-        sweep_values = [np.linspace(*param_specs[k], num_points) for k in continuous_keys]
+        sweep_values = [_sample_range_linspace(param_specs[k], num_points) for k in continuous_keys]
         continuous_dicts = [dict(zip(continuous_keys, combo)) for combo in itertools.product(*sweep_values)]
     elif grid_type == "sobol":
         m = np.log2(num_points)
@@ -936,7 +998,7 @@ def generate_grid(param_specs: dict, grid_type: str = "linear", num_points: int 
             raise ValueError("For Sobol sampling, num_points must be a power of 2.")
         sobol_vals = Sobol(d=len(continuous_keys), scramble=True, seed=sobol_seed).random_base2(m=int(m))
         sweep_values = [
-            param_specs[k][0] + sobol_vals[:, i] * (param_specs[k][1] - param_specs[k][0])
+            _sample_range_unit(param_specs[k], sobol_vals[:, i])
             for i, k in enumerate(continuous_keys)
         ]
         continuous_dicts = [dict(zip(continuous_keys, combo)) for combo in zip(*sweep_values)]

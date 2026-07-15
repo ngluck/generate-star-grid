@@ -43,6 +43,7 @@ all accept the same grammar for describing one or more values for a parameter:
 | `V1,V2,V3,...` | explicit list of specific values (discrete sweep) |
 | `MIN:MAX` | continuous range, sampled at `--num_points` values via `--grid_type` |
 | `MIN:MAX:STEP` | explicit values from `MIN` to `MAX`, spaced by `STEP`, inclusive of both endpoints |
+| `MIN:MAX:log` | continuous range sampled evenly in log₁₀ space (`MIN`, `MAX` must be positive); use for parameters spanning several OOM, e.g. metallicity |
 
 Multiple swept parameters are combined via Cartesian product — e.g. 200 mass points × 2 Z values = 400 models.
 
@@ -55,6 +56,7 @@ an explicit list can be written as space-separated or comma-separated values —
 --initial_Z 0.02                        # constant
 --initial_Z 0.014 0.02                  # 2 specific values
 --initial_Z 0.01:0.03                   # continuous range, sampled via --num_points/--grid_type
+--initial_Z 1e-4:0.04:log               # continuous range sampled evenly in log10 space
 --initial_Z 0.01:0.03:0.005             # 5 specific values: 0.01, 0.015, 0.02, 0.025, 0.03
 --mass 0.7:1.2:0.1                      # 6 specific masses: 0.7, 0.8, ..., 1.2
 --param 'overshoot_f(1)=0.0:0.04:0.01'  # 5 specific values for an extra inlist param
@@ -193,15 +195,25 @@ full Cartesian product that grows exponentially with each added dimension.
 
 ````bash
 python -m generate_star_grid.grid_utils \
-    --mass 0.7:1.2 \
-    --initial_Z 0.001:0.04 \
-    --alpha_MLT 1.5:2.5 \
-    --grid_type sobol --num_points 256 --sobol_seed 0 \
+    --mass 0.7:1.8 \
+    --initial_Z 1e-4:0.04:log \
+    --alpha_MLT 1:3 \
+    --grid_type sobol --num_points 8192 --sobol_seed 0 \
     --task_id $SLURM_ARRAY_TASK_ID
 ````
 
 For Sobol grids, `--num_points` is the *total* number of samples (not points per
 dimension) and must be a power of 2.
+
+````{tip}
+For a parameter that spans several OOM (e.g. metallicity over
+`1e-4:0.04`, ~2.6 OOM), use the `MIN:MAX:log` spec so it is sampled evenly in
+log₁₀ space. A plain `MIN:MAX` range is sampled linearly, which for metallicity
+would place ~90% of models in the top half-OOM and almost none metal-poor;
+`1e-4:0.04:log` instead spreads models evenly across every OOM (~38% land
+below `Z=1e-3`). Narrow-range parameters like mass and mixing-length alpha can
+stay linear.
+````
 
 ````{warning}
 If `--num_points` is not a power of 2, the dry run will warn you before any models are built.
