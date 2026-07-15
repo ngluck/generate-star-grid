@@ -23,6 +23,7 @@ grid_inlists/
 LOGS/
 slurm_logs/
 slurm-*.out
+*.log
 *.txt
 !docs/requirements.txt
 

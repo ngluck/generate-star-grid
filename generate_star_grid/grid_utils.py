@@ -218,6 +218,7 @@ def write_grid_notes(
     num_points: int,
     out_path: Union[str, Path],
     param_registry: Optional[dict] = None,
+    sobol_seed: Optional[int] = None,
 ) -> None:
     """
     Write a notes.txt summarizing a grid's constant and swept parameters.
@@ -238,6 +239,8 @@ def write_grid_notes(
         param_registry: Dict like PARAM_FORMAT (label/fmt/inlist_key per key).
             Defaults to PARAM_FORMAT; pass an extended copy to include extra
             (non-built-in) parameters.
+        sobol_seed: Sobol scramble seed to record for provenance (only written
+            for 'sobol' grids). None means the scramble was unseeded.
     """
     registry = param_registry or PARAM_FORMAT
     fixed = {k: v for k, v in param_specs.items() if k in registry and not isinstance(v, (tuple, list))}
@@ -247,6 +250,10 @@ def write_grid_notes(
     lines = [
         f"Grid generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         f"Grid type: {grid_type}, num_points: {num_points}",
+    ]
+    if grid_type == "sobol":
+        lines.append(f"Sobol seed: {sobol_seed if sobol_seed is not None else 'unseeded (non-reproducible)'}")
+    lines += [
         "",
         "Constant parameters:",
     ]
@@ -294,6 +301,7 @@ def print_grid_dry_run(
     num_points: int = 8,
     avg_data_mb: float = 20.0,
     param_registry: Optional[dict] = None,
+    sobol_seed: Optional[int] = None,
 ) -> None:
     """
     Print a plan summary for a grid without building or running MESA.
@@ -312,6 +320,8 @@ def print_grid_dry_run(
         param_registry: Dict like PARAM_FORMAT (label/fmt/inlist_key per key).
             Defaults to PARAM_FORMAT; pass an extended copy to include extra
             (non-built-in) parameters added via --param.
+        sobol_seed: Seed for the Sobol scramble, forwarded to generate_grid so
+            the previewed filenames match the values that will actually run.
     """
     registry = param_registry or PARAM_FORMAT
     fixed = {k: v for k, v in param_specs.items() if k in registry and not isinstance(v, (tuple, list))}
@@ -376,7 +386,8 @@ def print_grid_dry_run(
 
     param_formats = compute_param_formats(param_specs, grid_type=grid_type, num_points=num_points,
                                            param_registry=registry)
-    param_dicts = generate_grid(param_specs, grid_type=grid_type, num_points=num_points)
+    param_dicts = generate_grid(param_specs, grid_type=grid_type, num_points=num_points,
+                                sobol_seed=sobol_seed)
 
     print("\nExample directory/file names:")
     sample_idxs = sorted({0, len(param_dicts) // 2, len(param_dicts) - 1})
@@ -869,7 +880,8 @@ def cleanup_grid_data(parent_dir: Union[str, Path], mode: str = "none") -> None:
     print(f"{verb} DATA/ in {len(model_dirs)} model director{'y' if len(model_dirs) == 1 else 'ies'}.")
 
 
-def generate_grid(param_specs: dict, grid_type: str = "linear", num_points: int = 8) -> list:
+def generate_grid(param_specs: dict, grid_type: str = "linear", num_points: int = 8,
+                  sobol_seed: Optional[int] = None) -> list:
     """
     Generate a list of parameter dictionaries for a MESA grid.
 
@@ -899,6 +911,12 @@ def generate_grid(param_specs: dict, grid_type: str = "linear", num_points: int 
             parameters are always used as-is.
         num_points: Points per continuous-sweep dimension (linear) or total
             continuous samples (sobol).
+        sobol_seed: Seed for the Sobol scramble. Pass a fixed integer so the
+            same cloud is regenerated on every call -- required when the grid
+            is rebuilt independently per process (e.g. one call per SLURM
+            array task), since each task must agree on the sampled points.
+            None (the default) leaves the scramble unseeded/non-reproducible.
+            Ignored for 'linear' grids.
 
     Returns:
         List of parameter dicts, one per grid point.
@@ -916,7 +934,7 @@ def generate_grid(param_specs: dict, grid_type: str = "linear", num_points: int 
         m = np.log2(num_points)
         if not m.is_integer():
             raise ValueError("For Sobol sampling, num_points must be a power of 2.")
-        sobol_vals = Sobol(d=len(continuous_keys), scramble=True).random_base2(m=int(m))
+        sobol_vals = Sobol(d=len(continuous_keys), scramble=True, seed=sobol_seed).random_base2(m=int(m))
         sweep_values = [
             param_specs[k][0] + sobol_vals[:, i] * (param_specs[k][1] - param_specs[k][0])
             for i, k in enumerate(continuous_keys)
@@ -1144,6 +1162,7 @@ def run_grid(
     max_workers: int = 2,
     param_registry: Optional[dict] = None,
     restart_photos: bool = False,
+    sobol_seed: Optional[int] = None,
 ) -> None:
     """
     Build MESA, generate the parameter grid, and run all models in parallel.
@@ -1161,6 +1180,7 @@ def run_grid(
         restart_photos: If True, restart each model from its latest MESA photo
             if one exists (see run_mesa_model). Falls back to a fresh run when
             no photos are found.
+        sobol_seed: Sobol scramble seed forwarded to generate_grid (see there).
     """
     this_grid_dir = Path.cwd()
     print("Building MESA...", flush=True)
@@ -1169,13 +1189,14 @@ def run_grid(
 
     (this_grid_dir / "LOGS").mkdir(exist_ok=True)
 
-    param_dicts = generate_grid(param_ranges, grid_type=grid_type, num_points=num_points)
+    param_dicts = generate_grid(param_ranges, grid_type=grid_type, num_points=num_points,
+                                sobol_seed=sobol_seed)
     print(f"Running {len(param_dicts)} models.", flush=True)
 
     param_formats = compute_param_formats(param_ranges, grid_type=grid_type, num_points=num_points,
                                            param_registry=param_registry)
     write_grid_notes(param_ranges, param_formats, grid_type, num_points, this_grid_dir / "notes.txt",
-                      param_registry=param_registry)
+                      param_registry=param_registry, sobol_seed=sobol_seed)
 
     args_list = [
         (p, this_grid_dir / "inlist_template", this_grid_dir, param_formats, param_registry, restart_photos)
@@ -1220,6 +1241,11 @@ if __name__ == "__main__":
                              "disk usage estimate (default: 20).")
     parser.add_argument("--grid_type", choices=["linear", "sobol"], default="linear")
     parser.add_argument("--num_points", type=int, default=8)
+    parser.add_argument("--sobol_seed", type=int, default=0,
+                        help="Seed for the Sobol scramble (default: 0). A fixed seed makes the "
+                             "sampled cloud reproducible, so every SLURM array task rebuilds the "
+                             "identical grid; change it to draw a different cloud. Ignored for "
+                             "--grid_type linear.")
     parser.add_argument("--max_workers", type=int, default=1)
     parser.add_argument("--restart_photos", action="store_true",
                         help="Restart each run from the most recent MESA photo in its "
@@ -1254,10 +1280,12 @@ if __name__ == "__main__":
 
     if args.dry_run:
         print_grid_dry_run(param_ranges, grid_type=args.grid_type, num_points=args.num_points,
-                            avg_data_mb=args.avg_data_mb, param_registry=param_registry)
+                            avg_data_mb=args.avg_data_mb, param_registry=param_registry,
+                            sobol_seed=args.sobol_seed)
         sys.exit(0)
 
-    param_dicts = generate_grid(param_ranges, grid_type=args.grid_type, num_points=args.num_points)
+    param_dicts = generate_grid(param_ranges, grid_type=args.grid_type, num_points=args.num_points,
+                                sobol_seed=args.sobol_seed)
     param_formats = compute_param_formats(param_ranges, grid_type=args.grid_type, num_points=args.num_points,
                                            param_registry=param_registry)
 
@@ -1275,7 +1303,8 @@ if __name__ == "__main__":
 
         if idx == 0:
             write_grid_notes(param_ranges, param_formats, args.grid_type, args.num_points,
-                              this_grid_dir / "notes.txt", param_registry=param_registry)
+                              this_grid_dir / "notes.txt", param_registry=param_registry,
+                              sobol_seed=args.sobol_seed)
 
         log_dir_name = make_run_dir_name(params, param_formats, param_registry) + f"_TASK_{idx}"
         run_mesa_model(
@@ -1296,6 +1325,7 @@ if __name__ == "__main__":
             max_workers=args.max_workers,
             param_registry=param_registry,
             restart_photos=args.restart_photos,
+            sobol_seed=args.sobol_seed,
         )
 
     print(f"Done at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.")

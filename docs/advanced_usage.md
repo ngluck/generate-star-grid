@@ -45,6 +45,16 @@ Add `--dry_run` to preview the batch count, models-per-batch, and example batch
 directory names without writing the queue file or submitting anything.
 ````
 
+````{note}
+Both the inner sweep and the outer batch dimension support Sobol sampling: pass
+`--grid_type sobol` (with `--sobol_seed`) for the inner ranges and/or
+`--outer_grid_type sobol` (with `--outer_sobol_seed`) for the outer ranges. See
+[Sobol Sampling](usage.md#sobol-sampling) for details. When using a Sobol outer
+dimension, keep `--outer_sobol_seed` **identical** between `start` and any later
+`expand` — the two must draw the same outer cloud for `expand` to recognize which
+batches already exist.
+````
+
 This submits the first batch and writes `queue.json`, which tracks the remaining
 outer batches and all per-batch configuration. Each batch's combine/cleanup job
 calls `submit_grid next --queue_file ...` itself once it actually finishes, rather

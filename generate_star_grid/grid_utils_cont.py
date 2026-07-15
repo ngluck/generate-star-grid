@@ -252,6 +252,7 @@ def run_grid(
     resume: bool = False,
     resume_edit_path: str = None,
     param_registry: Optional[dict] = None,
+    sobol_seed: Optional[int] = None,
 ) -> None:
     """
     Build MESA, generate the parameter grid, and run all models in parallel.
@@ -273,6 +274,7 @@ def run_grid(
         param_registry: Dict like PARAM_FORMAT (label/fmt/inlist_key per key).
             Defaults to PARAM_FORMAT; pass an extended copy to include extra
             (non-built-in) parameters added via --param.
+        sobol_seed: Sobol scramble seed forwarded to generate_grid (see there).
     """
     this_grid_dir = Path.cwd()
     print("Building MESA...", flush=True)
@@ -294,13 +296,14 @@ def run_grid(
         tag = resume_edits.resume_tag
         modifications = resume_edits.modifications
 
-    param_dicts = generate_grid(param_ranges, grid_type=grid_type, num_points=num_points)
+    param_dicts = generate_grid(param_ranges, grid_type=grid_type, num_points=num_points,
+                                sobol_seed=sobol_seed)
     print(f"Running {len(param_dicts)} models.", flush=True)
 
     param_formats = compute_param_formats(param_ranges, grid_type=grid_type, num_points=num_points,
                                            param_registry=param_registry)
     write_grid_notes(param_ranges, param_formats, grid_type, num_points, this_grid_dir / "notes.txt",
-                      param_registry=param_registry)
+                      param_registry=param_registry, sobol_seed=sobol_seed)
 
     args_list = [
         (p, this_grid_dir / "inlist_template", this_grid_dir, resume, modifications, tag,
@@ -346,6 +349,11 @@ if __name__ == "__main__":
                              "disk usage estimate (default: 20).")
     parser.add_argument("--grid_type", choices=["linear", "sobol"], default="linear")
     parser.add_argument("--num_points", type=int, default=8)
+    parser.add_argument("--sobol_seed", type=int, default=0,
+                        help="Seed for the Sobol scramble (default: 0). A fixed seed makes the "
+                             "sampled cloud reproducible, so every SLURM array task rebuilds the "
+                             "identical grid; change it to draw a different cloud. Ignored for "
+                             "--grid_type linear.")
     parser.add_argument("--max_workers", type=int, default=1)
     parser.add_argument("--resume", action="store_true",
                         help="Continue evolution from existing TAMS models.")
@@ -377,7 +385,8 @@ if __name__ == "__main__":
 
     if args.dry_run:
         print_grid_dry_run(param_ranges, grid_type=args.grid_type, num_points=args.num_points,
-                            avg_data_mb=args.avg_data_mb, param_registry=param_registry)
+                            avg_data_mb=args.avg_data_mb, param_registry=param_registry,
+                            sobol_seed=args.sobol_seed)
         sys.exit(0)
 
     run_grid(
@@ -388,5 +397,6 @@ if __name__ == "__main__":
         resume=args.resume,
         resume_edit_path=args.resume_edit_path,
         param_registry=param_registry,
+        sobol_seed=args.sobol_seed,
     )
     print(f"Done at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.")

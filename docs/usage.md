@@ -183,17 +183,38 @@ Use `--max_workers 1` for serial/debug mode.
 
 ### Sobol Sampling
 
-For Sobol grids, `--num_points` must be a power of 2:
+Grids are evenly spaced (`--grid_type linear`) by default. As an alternative,
+`--grid_type sobol` draws a quasi-random [Sobol sequence](https://en.wikipedia.org/wiki/Sobol_sequence)
+that fills the parameter space more uniformly than a random draw. This is
+especially useful when sweeping several parameters at once (e.g. mass,
+metallicity, and mixing-length alpha): every parameter given as a `MIN:MAX`
+range is sampled *jointly* in one `--num_points`-point cloud, rather than as a
+full Cartesian product that grows exponentially with each added dimension.
 
 ````bash
 python -m generate_star_grid.grid_utils \
-    --min_mass 0.7 --max_mass 1.2 \
-    --grid_type sobol --num_points 128 \
+    --mass 0.7:1.2 \
+    --initial_Z 0.001:0.04 \
+    --alpha_MLT 1.5:2.5 \
+    --grid_type sobol --num_points 256 --sobol_seed 0 \
     --task_id $SLURM_ARRAY_TASK_ID
 ````
 
+For Sobol grids, `--num_points` is the *total* number of samples (not points per
+dimension) and must be a power of 2.
+
 ````{warning}
 If `--num_points` is not a power of 2, the dry run will warn you before any models are built.
+````
+
+````{note}
+`--sobol_seed` (default `0`) seeds the Sobol scramble. Because every SLURM array
+task rebuilds the grid independently and selects its own `--task_id`, a **fixed
+seed is required** for all tasks to agree on the same sampled points — the
+default of `0` ensures this. Pass a different integer to draw a different cloud.
+The seed is recorded in `notes.txt` for provenance. Only `MIN:MAX` ranges are
+Sobol-sampled; parameters given as explicit lists are still combined via
+Cartesian product, and `--grid_type linear` ignores the seed entirely.
 ````
 
 ### SLURM Job Array

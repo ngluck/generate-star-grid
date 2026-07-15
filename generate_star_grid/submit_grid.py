@@ -171,7 +171,8 @@ def cmd_start(args):
     outer_formats = compute_param_formats(
         outer_specs, grid_type=args.outer_grid_type, num_points=args.outer_num_points, param_registry=registry
     )
-    outer_batches = generate_grid(outer_specs, grid_type=args.outer_grid_type, num_points=args.outer_num_points)
+    outer_batches = generate_grid(outer_specs, grid_type=args.outer_grid_type,
+                                  num_points=args.outer_num_points, sobol_seed=args.outer_sobol_seed)
 
     # Precompute the inner CLI args once -- identical for every outer batch.
     inner_cli_args = []
@@ -182,10 +183,12 @@ def cmd_start(args):
             inner_cli_args += [_BUILTIN_CLI_FLAG[internal_key], spec_str.strip()]
         else:
             inner_cli_args += ["--param", f"{internal_key}={spec_str.strip()}"]
-    inner_cli_args += ["--grid_type", args.grid_type, "--num_points", str(args.num_points)]
+    inner_cli_args += ["--grid_type", args.grid_type, "--num_points", str(args.num_points),
+                       "--sobol_seed", str(args.sobol_seed)]
 
     inner_keys = [_resolve_key(item.split("=", 1)[0], inlist_text)[0] for item in args.inner]
-    inner_count = len(generate_grid(inner_specs, grid_type=args.grid_type, num_points=args.num_points))
+    inner_count = len(generate_grid(inner_specs, grid_type=args.grid_type, num_points=args.num_points,
+                                    sobol_seed=args.sobol_seed))
 
     print(f"Outer batches: {len(outer_batches)}")
     print(f"Inner models per batch: {inner_count}")
@@ -605,7 +608,8 @@ def cmd_expand(args):
     outer_formats = compute_param_formats(
         outer_specs, grid_type=args.outer_grid_type, num_points=args.outer_num_points, param_registry=registry
     )
-    all_batches = generate_grid(outer_specs, grid_type=args.outer_grid_type, num_points=args.outer_num_points)
+    all_batches = generate_grid(outer_specs, grid_type=args.outer_grid_type,
+                                num_points=args.outer_num_points, sobol_seed=args.outer_sobol_seed)
 
     # Build label -> internal_key reverse map for notes.txt parsing
     label_to_key = {v["label"]: k for k, v in registry.items()}
@@ -653,7 +657,8 @@ def cmd_expand(args):
             inner_cli_args += [_BUILTIN_CLI_FLAG[internal_key], spec_str.strip()]
         else:
             inner_cli_args += ["--param", f"{internal_key}={spec_str.strip()}"]
-    inner_cli_args += ["--grid_type", args.grid_type, "--num_points", str(args.num_points)]
+    inner_cli_args += ["--grid_type", args.grid_type, "--num_points", str(args.num_points),
+                       "--sobol_seed", str(args.sobol_seed)]
 
     inner_keys = [_resolve_key(item.split("=", 1)[0], inlist_text)[0] for item in args.inner]
 
@@ -760,8 +765,17 @@ if __name__ == "__main__":
                           help="Repeatable. Parameter(s) swept within each batch's SLURM array.")
     p_start.add_argument("--grid_type", choices=["linear", "sobol"], default="linear", help="For inner continuous ranges.")
     p_start.add_argument("--num_points", type=int, default=8, help="For inner continuous ranges.")
+    p_start.add_argument("--sobol_seed", type=int, default=0,
+                         help="Seed for the inner Sobol scramble (default: 0). A fixed seed makes "
+                              "each batch's SLURM array agree on the sampled cloud. Ignored unless "
+                              "--grid_type sobol.")
     p_start.add_argument("--outer_grid_type", choices=["linear", "sobol"], default="linear")
     p_start.add_argument("--outer_num_points", type=int, default=8)
+    p_start.add_argument("--outer_sobol_seed", type=int, default=0,
+                         help="Seed for the outer Sobol scramble (default: 0). Keep it identical "
+                              "between 'start' and a later 'expand' so the outer batch points match "
+                              "and expand can tell which batches already exist. Ignored unless "
+                              "--outer_grid_type sobol.")
     p_start.add_argument("--python", default=sys.executable)
     p_start.add_argument("--conda_env", default="py311")
     p_start.add_argument("--array_time", default="12:00:00")
@@ -800,8 +814,16 @@ if __name__ == "__main__":
     p_expand.add_argument("--inner", action="append", required=True, metavar="KEY=SPEC")
     p_expand.add_argument("--grid_type", choices=["linear", "sobol"], default="linear")
     p_expand.add_argument("--num_points", type=int, default=8)
+    p_expand.add_argument("--sobol_seed", type=int, default=0,
+                          help="Seed for the inner Sobol scramble (default: 0); match the value "
+                               "used at 'start'. Ignored unless --grid_type sobol.")
     p_expand.add_argument("--outer_grid_type", choices=["linear", "sobol"], default="linear")
     p_expand.add_argument("--outer_num_points", type=int, default=8)
+    p_expand.add_argument("--outer_sobol_seed", type=int, default=0,
+                          help="Seed for the outer Sobol scramble (default: 0); MUST match the "
+                               "value used at 'start' so the outer batch points line up and expand "
+                               "can identify already-covered batches. Ignored unless "
+                               "--outer_grid_type sobol.")
     p_expand.add_argument("--python", default=sys.executable)
     p_expand.add_argument("--conda_env", default="py311")
     p_expand.add_argument("--array_time", default="12:00:00")
