@@ -217,6 +217,13 @@ def merge_batch_hdf5(
     return total_rows
 
 
+def _hdf5_nrows(hdf5_path: Path, hdf5_key: str) -> int:
+    """Return the row count of hdf5_key in an HDF5 store (0 if key absent)."""
+    with pd.HDFStore(str(hdf5_path), mode="r") as store:
+        storer = store.get_storer(hdf5_key)
+        return int(storer.nrows) if storer is not None else 0
+
+
 def _extract_var_labels(dir_name: str) -> list:
     """Return the _var<Label> labels present in a directory name, in order."""
     return re.findall(r"_var([A-Za-z]+)", dir_name, flags=re.IGNORECASE)
@@ -322,6 +329,7 @@ def cmd_expand(args) -> None:
 
 
 def cmd_merge(args) -> None:
+    config = None
     if args.queue_file:
         queue_file = Path(args.queue_file).resolve()
         state = json.loads(queue_file.read_text())
