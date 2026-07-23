@@ -1,5 +1,11 @@
 # Basic Usage
 
+Grids can be created directly in the CLI terminal, but this is generally not recommended.
+Instead, grid generation should be done through a slurm array job. However, prior to 
+submitting a large grid, a dry-run can (and should) be run via the CLI terminal to ensure
+correct parameter ranges, file names, and estimate the storage space necessary for the 
+whole grid.
+
 ## Setting Up a Grid Run Directory
 
 Each grid run lives in its own directory. The minimum required contents are:
