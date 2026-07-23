@@ -21,10 +21,12 @@ def parse_notes_txt(notes_path: Path) -> dict:
     """
     Parse a per-batch notes.txt and return structured parameter info.
 
-    Returns a dict with keys:
+    Returns a dict with keys::
+
       'constants': {label: float, ...}   -- parameters fixed for this batch
       'swept':     {label: {'internal_key': str, 'min': float, 'max': float,
                              'num_points': int}, ...}
+
     Returns empty dicts for both if the file cannot be parsed.
     """
     constants = {}
@@ -89,7 +91,8 @@ def scan_merged_dirs(parent_dir: Path) -> list:
     """
     Scan parent_dir for merged grid directories and return their coverage.
 
-    Each entry in the returned list is a dict:
+    Each entry in the returned list is a dict::
+
       'dir':                  Path  -- the merged directory
       'varying_labels':       list[str]  -- labels that differ across batches (outer)
       'fixed_labels':         list[str]  -- labels constant across all batches

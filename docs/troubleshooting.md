@@ -149,7 +149,7 @@ checkpoint files ("photos") instead of restarting from scratch.
 This is **always on** for grids submitted via `submit_grid start`/`expand`; there
 is no flag to set.
 
-#### How it works
+### How it works
 
 - MESA periodically writes checkpoint files to each run directory's `photos/`
   folder while it runs.
@@ -164,7 +164,7 @@ is no flag to set.
   checkpoint) or `./re` isn't available in the run directory, it falls back to
   a normal `./rn` run — restart is opportunistic, not required.
 
-#### `history.data` deduplication
+### `history.data` deduplication
 
 Resuming from a photo makes MESA re-append rows starting at the photo's
 `model_number`, which leaves a short non-monotonic, duplicated stretch where
@@ -175,7 +175,7 @@ occurrence of each one, and re-sorts — so `combined_history.hdf5` doesn't
 double-count steps. This is a no-op for tracks that completed without ever
 timing out.
 
-#### Using `grid_utils.py` directly (outside `submit_grid`)
+### Using `grid_utils.py` directly (outside `submit_grid`)
 
 If you invoke `grid_utils.py` yourself rather than going through `submit_grid`,
 photo-restart is opt-in — pass `--restart_photos` to resume from any existing

@@ -105,7 +105,7 @@ or failed, cleanup is skipped with an explanatory message.
 
 ## Merging Multi-Batch Grid Histories
 
-For grids run via `submit_grid` (see [Multi-Batch Grids](usage.md#multi-batch-grids-recommended-when-the-full-grid-wont-fit-on-disk)),
+For grids run via `submit_grid` (see [Multi-Batch Grids](advanced_usage.md#multi-batch-grids)),
 each outer batch produces its own `combined_history.hdf5`. Once all batches are
 complete, `merge_grids.py` combines them into a single file spanning the full
 parameter space (e.g. the complete M×Z grid).

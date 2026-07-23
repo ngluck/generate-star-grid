@@ -17,8 +17,11 @@ my_grid_run/
 ````
 
 ````{tip}
-See [`examples/inlist_template`](https://github.com/ngluck/generate-star-grid/blob/main/examples/inlist_template) for a reference inlist. For details on the required format and disk space expectations, see [Output Structure](output.md#inlist-template-format).
+See [`examples/inlist_template`](https://github.com/ngluck/generate-star-grid/blob/main/examples/inlist_template) for a reference inlist. For details on the required format and disk space expectations, see [Output Structure](output.md#inlist_template-format).
 ````
+
+For where each of these files comes from and how to assemble the directory, see
+[Setting Up Directories](installation.md#setting-up-directories-installation-does-not-create).
 
 The template uses standard Fortran namelist syntax; `grid_utils` substitutes values for:
 
@@ -31,6 +34,68 @@ The template uses standard Fortran namelist syntax; `grid_utils` substitutes val
 | any other settable parameter | `--param KEY=SPEC` (repeatable) |
 | `log_directory = ...` | always set to `'DATA'` |
 | `save_model_filename = ...` | always set to `TAMS_<run_dir_name>.mod` |
+
+## Choosing the Grid Directory
+
+`grid_utils` has **no `--grid_dir` flag**. It always uses the current working
+directory as the grid directory: that is where it looks for `inlist_template`,
+`mk`, `rn`, and `star`, and where it writes `notes.txt`, `LOGS/`, the per-model
+directories, `grid_TAMS/`, `grid_inlists/`, and `grid_profiles/`.
+
+Inside a SLURM script this is handled by the `cd` line at the top of the job
+script. When running by hand, you point at the directory by launching from it:
+
+````{tab-set}
+```{tab-item} cd first
+cd /path/to/my_grid_run
+python -m generate_star_grid.grid_utils \
+    --mass 0.7:1.2 --num_points 8 --max_workers 4
+```
+```{tab-item} Subshell (keeps your shell's cwd)
+(cd /path/to/my_grid_run && python -m generate_star_grid.grid_utils \
+    --mass 0.7:1.2 --num_points 8 --max_workers 4)
+```
+```{tab-item} env -C (no cd at all)
+env -C /path/to/my_grid_run python -m generate_star_grid.grid_utils \
+    --mass 0.7:1.2 --num_points 8 --max_workers 4
+```
+````
+
+The run prints the directory it resolved before starting any models, so you can
+confirm you are in the right place:
+
+```text
+Building MESA...
+Grid directory: /path/to/my_grid_run
+Running 8 models.
+```
+
+````{warning}
+Launching from the wrong directory fails immediately rather than silently
+writing to the wrong place — but the error depends on what is missing:
+
+| Missing | Error |
+|---|---|
+| `inlist_template` | `FileNotFoundError: ... 'inlist_template'` |
+| `mk` (local run) | `FileNotFoundError: ... './mk'` from the build step |
+| `rn` or `star` | `FileNotFoundError: Required MESA file 'rn' not found in <cwd>` |
+
+A `--dry_run` does **not** catch this: it only reads `inlist_template`, and only
+when `--param` is used, so it can succeed from a directory that a real run would
+fail in.
+````
+
+````{note}
+Only `grid_utils` is cwd-based. The post-processing and submission tools take
+the directory explicitly, so they can be run from anywhere:
+
+```bash
+python -m generate_star_grid.make_grid --parent_dir /path/to/my_grid_run --save
+python -m generate_star_grid.merge_grids merge --batch_dirs /path/to/batch_* --output_dir /path/to/merged
+python -m generate_star_grid.submit_grid start --source_dir /path/to/my_grid_run ...
+python -m generate_star_grid.grid_inventory --parent_dir /path/to/merged
+```
+````
 
 ## Specifying Parameter Values
 
@@ -182,6 +247,15 @@ python -m generate_star_grid.grid_utils \
 ````{tip}
 Use `--max_workers 1` for serial/debug mode.
 ````
+
+### Disk Cleanup During a Run
+
+Each model directory gets a copy of the `star` binary (~54 MB) so MESA can run
+inside it. By default the copy is deleted as soon as that model completes
+successfully, keeping a large grid from filling the disk with identical
+binaries; copies from failed models are kept so they can be debugged. Pass
+`--no_cleanup_star` to keep all of them. See
+[Output Structure](output.md#the-star-binary-in-model-directories).
 
 ### Sobol Sampling
 

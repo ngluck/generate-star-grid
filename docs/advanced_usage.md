@@ -11,6 +11,13 @@ retries any failed tasks once, deletes the batch's run artifacts, and only then
 triggers the next outer batch — so peak disk usage is bounded by a single batch's
 footprint, not the whole grid's.
 
+````{tip}
+This requires a parameter to batch *along*. For a flat grid with no outer
+dimension — a joint Sobol cloud run as one array over task ids `0..N-1` — use
+[`chunk_grid`](#chunked-runs-for-flat-grids-chunk_grid) instead, which bounds
+disk by splitting the task-id range itself.
+````
+
 ````{note}
 Each batch's `combined_history.hdf5` gets a constant column for both its inner
 key (e.g. `M`) and every outer key fixed for that batch (e.g. `Z`) — both are
@@ -267,6 +274,199 @@ It:
 The result is a single merged directory containing all original and new per-batch
 subdirectories alongside the combined `combined_history.hdf5` covering the full
 expanded parameter space.
+
+## Chunked Runs for Flat Grids (`chunk_grid`)
+
+`submit_grid` bounds disk usage by splitting a grid along an **outer** parameter.
+A flat grid has no outer parameter to split on — a joint Sobol cloud over mass,
+Z, and α (see [Sobol Sampling](usage.md#sobol-sampling)) is one array over task
+ids `0..N-1`, and every run directory lands side by side in the grid directory.
+At 8192 models × ~20 MB of `DATA/` and `photos/` each, that footprint can exhaust
+the filesystem long before the array finishes, even though the output you
+actually keep (`grid_TAMS/`, `grid_profiles/`, `combined_history.hdf5`) is a
+small fraction of it.
+
+`chunk_grid` carves the task-id range into contiguous chunks and runs **one chunk
+at a time**, folding each finished chunk down to a single HDF5 before the next
+chunk starts:
+
+```text
+my_grid/
+├── chunk_00000_00511/combined_history.hdf5     # intermediate
+├── chunk_00512_01023/combined_history.hdf5     # intermediate
+├── ...
+└── combined_history.hdf5                       # master, merged from the above
+```
+
+Peak disk usage is bounded by one chunk's run directories rather than the whole
+grid's. Everything stays in the grid's own directory — there is no scratch
+staging or relocation step.
+
+````{note}
+Chunking is safe for Sobol grids because every array task rebuilds the identical
+cloud from `--sobol_seed` and selects its own index, so the mapping from task id
+to parameters is fixed no matter how the range is split. The flags you pass to
+`chunk_grid` must therefore match the cloud exactly — same `--mass`/`--initial_Z`/
+`--initial_Y`/`--alpha_MLT`/`--param` specs, same `--grid_type`, `--num_points`,
+and `--sobol_seed`. `chunk_grid submit` writes them into the generated array
+script itself, so a submitted run stays consistent by construction.
+````
+
+### Submitting a Chunked Grid
+
+`chunk_grid submit` generates the SLURM scripts, writes `chunk_queue.json`, and
+submits the first chunk:
+
+````bash
+python -m generate_star_grid.chunk_grid submit \
+    --parent_dir /path/to/my_grid \
+    --mass 0.7:1.8 \
+    --initial_Z 1e-4:0.04:log \
+    --alpha_MLT 1:3 \
+    --grid_type sobol --num_points 8192 --sobol_seed 0 \
+    --chunk_size 512 \
+    --max_cpus 990
+````
+
+````{tip}
+Add `--dry_run` to preview the chunk split without writing or submitting anything:
+
+~~~
+8192 models / chunk_size 512 -> 16 chunk(s).
+  chunk 0: tasks 0-511
+  chunk 1: tasks 512-1023
+  chunk 2: tasks 1024-1535
+  ... (13 more)
+On completion: merge the master, verify it, and delete the intermediate chunks.
+--dry_run: nothing written or submitted.
+~~~
+
+`chunk_grid plan --num_points 8192 --chunk_size 512` prints the same split
+(including each chunk's directory name) without needing the grid flags.
+````
+
+Three scripts are written into the grid directory, plus a `slurm_logs/` directory
+for their output:
+
+| File | Role |
+|---|---|
+| `run_chunk_array.sh` | The MESA array job — one chunk's task-id range at a time |
+| `run_chunk_step.sh` | Runs after each array (`afterany`): compresses the chunk, submits the next |
+| `run_finalize.sh` | Merges the master and deletes the intermediates |
+| `chunk_queue.json` | Queue state: full config, `current` chunk, and `remaining` chunk indices |
+
+The chain is: chunk *i*'s array → step job (`chunk_grid advance`) → chunk *i+1*'s
+array → … → finalize. The step job is submitted with `afterany`, so it runs even
+if some tasks in the array fail — a partly failed chunk still compresses its
+completed models instead of stalling the queue.
+
+Key flags (see `chunk_grid submit --help` for the rest):
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--chunk_size` | `512` | Tasks per chunk; sets the peak disk footprint |
+| `--max_cpus` | none | Throttles each chunk's array via `--array=S-E%T` |
+| `--array_time` / `--array_mem` / `--array_partition` | `23:59:59` / `8G` / `day` | Per-task MESA resources |
+| `--step_time` / `--step_mem` | `2:00:00` / `16G` | The compress-and-submit-next job |
+| `--finalize_time` / `--finalize_mem` | `8:00:00` / `32G` | The final merge job |
+| `--constants` | `M Y Z alpha` | Parameter labels extracted from directory names into the HDF5 |
+| `--parent_dir` | current directory | Grid directory |
+
+### What Compression Does
+
+For each chunk, `chunk_grid advance` (or `chunk_grid compress`, run by hand):
+
+1. Rebuilds the chunk's task ids → model directory names, exactly as the array
+   tasks named them.
+2. Partitions them into **completed** / **incomplete** / **never started**. The
+   guard is per directory: a model is complete if and only if its own
+   `grid_TAMS/TAMS_<dirname>.mod` exists. Unlike the all-or-nothing check in
+   `make_grid --cleanup`, a partially failed chunk still compresses everything
+   that did finish.
+3. Moves the completed directories into `chunk_<start>_<end>/` (a same-filesystem
+   rename) and builds `combined_history.hdf5` from them.
+4. Deletes the moved run directories — but only after verifying the HDF5 exists
+   and is non-empty. If the write failed, the run directories are left in the
+   chunk directory for inspection and the job errors out.
+
+Incomplete models are left untouched in the grid directory, so they can be
+inspected or re-run. The run directories are redundant once the HDF5 exists:
+TAMS models are already in `grid_TAMS/`, profiles in `grid_profiles/`, inlists in
+`grid_inlists/`, and MESA stdout in `LOGS/`.
+
+````{warning}
+`chunk_grid` does **not** retry failed tasks the way `submit_grid` does. Tasks
+that never produced a TAMS file are skipped by compression and their directories
+are left in place; the queue moves on to the next chunk regardless. Check for
+leftover `M_*` directories when the run finishes, and use
+[`submit_grid check-failed`](troubleshooting.md#submit_grid-check-failed) to
+diagnose them.
+````
+
+### Finalizing
+
+Once every chunk is compressed, the finalize job merges the chunk HDF5s into the
+master. This delegates to the same `merge_batch_hdf5` used for multi-batch
+grids, so each chunk's `Track` values are offset to stay globally unique and all
+chunks are pinned to one canonical column order.
+
+The intermediates are only deleted once the master **provably** contains every
+row they held:
+
+```text
+Merging 16 chunks into /path/to/my_grid/combined_history.hdf5 ...
+Master written: /path/to/my_grid/combined_history.hdf5 (4821330 rows from 16 chunks).
+Master verified (4821330 rows). Deleted 16 intermediate chunk dir(s).
+```
+
+If the row counts disagree, nothing is deleted:
+
+```text
+Refusing to delete intermediates: master has 4700112 rows but the 16 chunk
+file(s) total 4821330. Master left in place; chunks kept for inspection.
+```
+
+### Running the Steps Manually
+
+Each stage is a standalone subcommand, useful for recovering a run whose chain
+was interrupted. `--parent_dir` defaults to the current directory.
+
+````{tab-set}
+```{tab-item} Compress one chunk
+python -m generate_star_grid.chunk_grid compress \
+    --parent_dir /path/to/my_grid \
+    --mass 0.7:1.8 --initial_Z 1e-4:0.04:log --alpha_MLT 1:3 \
+    --grid_type sobol --num_points 8192 --sobol_seed 0 \
+    --chunk_size 512 --chunk_index 3
+```
+```{tab-item} Merge without deleting
+python -m generate_star_grid.chunk_grid merge \
+    --parent_dir /path/to/my_grid \
+    --output /path/to/my_grid/combined_history.hdf5
+```
+```{tab-item} Finalize, keeping chunks
+python -m generate_star_grid.chunk_grid finalize \
+    --parent_dir /path/to/my_grid \
+    --keep_chunks
+```
+````
+
+````{tip}
+`compress --no_delete` combines a chunk without deleting the moved run
+directories — it reclaims no space, but lets you confirm the HDF5 looks right
+before committing to the delete. `finalize --keep_chunks` is the same idea for
+the intermediates.
+````
+
+### Choosing Between `submit_grid` and `chunk_grid`
+
+| | `submit_grid start` | `chunk_grid submit` |
+|---|---|---|
+| Grid shape | Outer × inner Cartesian product | Flat task-id range (e.g. a joint Sobol cloud) |
+| Split along | An outer parameter's values | Contiguous task-id chunks |
+| Output | One `combined_history.hdf5` per batch, merged at the end | One per chunk, merged into a master at the end |
+| Failed tasks | Retried once automatically, then excluded | Skipped; directories left for manual handling |
+| Parallel queues | Yes (`--parallel N`) | No — one chunk at a time by design |
 
 ## Continuation Runs (Post-MS Evolution)
 

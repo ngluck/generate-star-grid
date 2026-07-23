@@ -18,7 +18,7 @@ my_grid_run/
 :::
 :::{tab-item} After Running
 ```{code-block} text
-:emphasize-lines: 9,10,11,12,13,14,15,16,17,18,19,20
+:emphasize-lines: 10,11,12,13,14,15,16,17,18,19,20,21,22,23
 my_grid_run/
 ├── inlist_template
 ├── inlist
@@ -26,6 +26,7 @@ my_grid_run/
 ├── history_columns.list
 ├── profile_columns.list
 ├── rn
+├── star
 ├── mk
 ├── notes.txt                                  # constant/swept params, spacing, formats used
 ├── M_0.70_Y_0.27_Z_0.02_alpha_2.0/           # one per model
@@ -34,7 +35,9 @@ my_grid_run/
 │   │   ├── profile1.data
 │   │   ├── profile1.data.GYRE
 │   │   └── profiles.index
-│   └── inlist_project
+│   ├── inlist_project                         # this model's substituted inlist
+│   ├── photos/                                # MESA checkpoints (used by photo restart)
+│   └── rn, re, inlist, ...                    # copies of the grid's MESA files
 ├── grid_TAMS/                                 # saved model at TAMS, one per model
 ├── grid_inlists/                              # archived inlist, one per model
 ├── grid_profiles/                             # copied profile files, one subdir per model
@@ -46,6 +49,22 @@ my_grid_run/
 ```{note}
 Items highlighted above are added by the pipeline after all array tasks complete.
 ```
+
+### The `star` Binary in Model Directories
+
+Each model directory gets its own copy of the `star` binary (~54 MB) because
+MESA runs from inside that directory. Once a model finishes successfully — MESA
+exits 0 *and* its `grid_TAMS/` save file was written — that copy is deleted, so
+a finished grid does not carry one binary per track. The top-level `star` is
+never touched, and the copy is remade from it on every run, including photo
+restarts.
+
+Copies belonging to **failed** models are deliberately left in place, so a
+failed run directory can still be inspected or re-run by hand.
+
+Pass `--no_cleanup_star` to keep every copy (~54 MB per model — for a 500-track
+grid that is ~27 GB); `--cleanup_star` is the default and does not need to be
+passed.
 
 ## Directory Naming and `notes.txt`
 

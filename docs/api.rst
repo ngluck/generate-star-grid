@@ -56,3 +56,27 @@ submit_grid
    :members:
    :undoc-members:
    :show-inheritance:
+
+merge_grids
+-----------
+
+.. automodule:: generate_star_grid.merge_grids
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+chunk_grid
+----------
+
+.. automodule:: generate_star_grid.chunk_grid
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+grid_inventory
+--------------
+
+.. automodule:: generate_star_grid.grid_inventory
+   :members:
+   :undoc-members:
+   :show-inheritance:
