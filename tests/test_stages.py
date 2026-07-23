@@ -1,6 +1,4 @@
 """Stage discovery: every mechanism a user might reach for, and the guards."""
-import json
-
 import pytest
 
 from generate_star_grid.stages import (
@@ -19,7 +17,7 @@ from generate_star_grid.stages import (
     stem_for_save_name,
 )
 
-from conftest import BASE_INLIST, SINGLE_STAGE_TEMPLATE, write_grid
+from conftest import BASE_INLIST, write_grid
 
 
 def stems(stages):
