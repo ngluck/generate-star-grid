@@ -842,14 +842,14 @@ def find_failed_tasks(
 
     Generalizes the old slurm/find_failed.sh (which hardcoded a single Y/Z/alpha
     combination) to any grid: it reconstructs each task's model directory name
-    directly from its LOGS/log_..._TASK_<id>.txt filename (stripping the
-    'log_' prefix, '.txt' suffix, and '_TASK_<id>' suffix), so it works
+    directly from its ``LOGS/log_..._TASK_<id>.txt`` filename (stripping the
+    ``log_`` prefix, ``.txt`` suffix, and ``_TASK_<id>`` suffix), so it works
     regardless of which parameters were swept or what values they took.
 
     A task is considered failed if it's missing its grid_TAMS/TAMS_*.mod save
     file, or if DATA/history.data is missing or smaller than threshold_mb.
-    The TAMS file is what MESA writes on a genuine stop condition (save_model_
-    when_terminate), so its absence is what actually distinguishes a finished
+    The TAMS file is what MESA writes on a genuine stop condition
+    (``save_model_when_terminate``), so its absence distinguishes a finished
     track from one cut off mid-run -- e.g. a task that hit the SLURM --time
     limit can still have accumulated history.data well past threshold_mb
     without ever reaching TAMS, and would otherwise be missed.
@@ -1120,7 +1120,7 @@ def collect_profile_files(run_dir: Path, mesa_dir: Path, log_dir_name: str) -> N
 
 def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: Path,
                     param_formats: Optional[dict] = None, param_registry: Optional[dict] = None,
-                    restart_photos: bool = False) -> None:
+                    restart_photos: bool = False, cleanup_star: bool = True) -> None:
     """
     Set up a run directory for a single MESA model and execute it.
 
@@ -1146,6 +1146,13 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
             and restart from the most recent one (via ./re) rather than starting
             from scratch. Falls back to ./rn if no photos are found or ./re is
             unavailable. The log file is opened in append mode when restarting.
+        cleanup_star: If True (the default), delete the run directory's copy of
+            the star binary once the model completed successfully (MESA exited 0 and
+            produced its TAMS save file). The copy is ~54 MB per model and is
+            re-copied from mesa_dir on every run, including photo restarts, so
+            removing it costs nothing and keeps a large grid's footprint down.
+            Left in place after a failure, so a failed run can be inspected or
+            re-run by hand.
     """
     log_dir_name = make_run_dir_name(params, param_formats, param_registry)
     run_dir = mesa_dir / log_dir_name
@@ -1178,11 +1185,13 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
     if photo:
         print(f"  Restarting {run_dir.name} from photo {photo}.", flush=True)
 
+    mesa_ok = False
     with open(log_path, log_mode) as log_file:
         try:
             subprocess.run(
                 cmd, cwd=run_dir, stdout=log_file, stderr=subprocess.STDOUT, text=True, check=True
             )
+            mesa_ok = True
         except subprocess.CalledProcessError as e:
             print(f"MESA run failed for {run_dir} (exit code {e.returncode})")
         except Exception as e:
@@ -1192,7 +1201,8 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
     src = run_dir / save_fname
     grid_tams = mesa_dir / "grid_TAMS"
     grid_tams.mkdir(exist_ok=True)
-    if src.exists():
+    tams_saved = src.exists()
+    if tams_saved:
         shutil.move(str(src), str(grid_tams / save_fname))
 
     inlist_out_dir = mesa_dir / "grid_inlists"
@@ -1201,20 +1211,25 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
 
     collect_profile_files(run_dir, mesa_dir, log_dir_name)
 
+    if cleanup_star and mesa_ok and tams_saved:
+        (run_dir / "star").unlink(missing_ok=True)
+
 
 def task_wrapper(args: tuple) -> None:
     """
     Unpack args and run a single MESA model; for use with ProcessPoolExecutor.
 
     Args:
-        args: Tuple of (params, template_file, mesa_dir, param_formats, param_registry, restart_photos).
+        args: Tuple of (params, template_file, mesa_dir, param_formats, param_registry,
+            restart_photos, cleanup_star).
     """
-    params, template_file, mesa_dir, param_formats, param_registry, restart_photos = args
+    (params, template_file, mesa_dir, param_formats, param_registry,
+     restart_photos, cleanup_star) = args
     log_dir_name = make_run_dir_name(params, param_formats, param_registry)
     logs_dir = mesa_dir / "LOGS"
     logs_dir.mkdir(exist_ok=True)
     run_mesa_model(template_file, mesa_dir, params, logs_dir / f"log_{log_dir_name}.txt",
-                    param_formats, param_registry, restart_photos)
+                    param_formats, param_registry, restart_photos, cleanup_star)
 
 
 def run_grid(
@@ -1225,6 +1240,7 @@ def run_grid(
     param_registry: Optional[dict] = None,
     restart_photos: bool = False,
     sobol_seed: Optional[int] = None,
+    cleanup_star: bool = True,
 ) -> None:
     """
     Build MESA, generate the parameter grid, and run all models in parallel.
@@ -1243,6 +1259,8 @@ def run_grid(
             if one exists (see run_mesa_model). Falls back to a fresh run when
             no photos are found.
         sobol_seed: Sobol scramble seed forwarded to generate_grid (see there).
+        cleanup_star: Delete each model's star copy once it completes
+            successfully (see run_mesa_model).
     """
     this_grid_dir = Path.cwd()
     print("Building MESA...", flush=True)
@@ -1261,7 +1279,8 @@ def run_grid(
                       param_registry=param_registry, sobol_seed=sobol_seed)
 
     args_list = [
-        (p, this_grid_dir / "inlist_template", this_grid_dir, param_formats, param_registry, restart_photos)
+        (p, this_grid_dir / "inlist_template", this_grid_dir, param_formats, param_registry,
+         restart_photos, cleanup_star)
         for p in param_dicts
     ]
 
@@ -1314,6 +1333,16 @@ if __name__ == "__main__":
                              "photos/ directory rather than starting from scratch. Falls "
                              "back to a fresh run when no photos are found or ./re is "
                              "unavailable. Use this to resume timed-out SLURM jobs.")
+    star_group = parser.add_mutually_exclusive_group()
+    star_group.add_argument("--cleanup_star", dest="cleanup_star", action="store_true", default=True,
+                            help="Delete a model's copy of the star binary (~54 MB) once it "
+                                 "completes successfully (default). The binary is re-copied from "
+                                 "the grid directory on every run, so this is safe and keeps large "
+                                 "grids from filling the disk with identical copies. Copies "
+                                 "belonging to failed runs are left alone.")
+    star_group.add_argument("--no_cleanup_star", dest="cleanup_star", action="store_false",
+                            help="Keep each model's star copy after a successful run. Costs "
+                                 "~54 MB per model; use only when debugging a finished run dir.")
     parser.add_argument("--task_id", type=int, default=None,
                         help="SLURM array task index: runs only this one parameter set.")
     args = parser.parse_args()
@@ -1377,6 +1406,7 @@ if __name__ == "__main__":
             param_formats,
             param_registry,
             args.restart_photos,
+            args.cleanup_star,
         )
 
     else:
@@ -1388,6 +1418,7 @@ if __name__ == "__main__":
             param_registry=param_registry,
             restart_photos=args.restart_photos,
             sobol_seed=args.sobol_seed,
+            cleanup_star=args.cleanup_star,
         )
 
     print(f"Done at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.")
