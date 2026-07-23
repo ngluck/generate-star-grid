@@ -622,6 +622,31 @@ overrides a base inlist with an extra one — so a base `inlist` and the
 ```
 ````
 
+````{warning}
+**Discovery follows what `rn` actually runs.** A stage inlist that `rn` never
+references is invisible to it: the grid then runs fewer stages than you intended
+and calls every track finished one stage early — quietly, because each track
+really did produce the last save file discovery knew about.
+
+The pipeline flags this. Any `inlist*` in the grid directory that declares a
+`save_model_filename` no stage covers produces a warning when the grid is
+submitted, and whenever you run the `stages` command:
+
+```text
+WARNING: 1 inlist declaration(s) in /path/to/my_grid are not reached by rn
+and will NOT become stages:
+  inlist_tams: save_model_filename = 'TAMS_0.70.mod'
+  Discovery follows the runs rn actually performs. Either reference these
+  inlists from rn, or name the stages explicitly, e.g.
+    --stages ZAMS,TAMS
+```
+
+Fix it either by adding the missing `do_one`/`./star` call to `rn`, or by
+passing `--stages` — but note that `--stages` only fixes the *bookkeeping*. If
+`rn` does not run the stage, MESA will not produce its save file and every track
+will be reported as failed. Wiring up `rn` is almost always the real fix.
+````
+
 Inspect what a grid directory resolves to before running anything:
 
 ````bash
@@ -633,13 +658,17 @@ Stages (3):
   1. ZAMS         grid_ZAMS/ZAMS_<run_dir>.mod   [inlist_pre_ms_header:12]
   2. TAMS         grid_TAMS/TAMS_<run_dir>.mod   [inlist_to_tams_header:14]
   3. RGB          grid_RGB/RGB_<run_dir>.mod     [inlist_to_rgb_header:9]  <- completion marker
+
+Every save declaration in this directory is accounted for.
 ```
+
+That last line is the check that nothing was missed — run this before submitting
+a multi-stage grid.
 
 ### Naming Stages Explicitly
 
-Pass `--stages` when discovery cannot see your layout (stage inlists that `rn`
-does not reference) or when you want different names than the save filenames
-imply. It is accepted by `grid_utils`, `make_grid`, `failure_report`,
+Pass `--stages` when you want different names than the save filenames imply, or
+to pin a grid's stages so they cannot drift if its inlists are edited later. It is accepted by `grid_utils`, `make_grid`, `failure_report`,
 `submit_grid start`/`expand`/`check-failed`, and `chunk_grid`
 `submit`/`compress`/`finalize`/`verify`.
 

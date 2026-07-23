@@ -452,6 +452,68 @@ def is_single_template_stage(stages: list, template_name: str) -> bool:
     return declared is None or declared == template_name
 
 
+def unreachable_stage_inlists(mesa_dir: Union[str, Path], stages: list,
+                              template_file: Optional[Union[str, Path]] = None) -> list:
+    """
+    Find inlists that declare a save no discovered stage covers.
+
+    Discovery follows what ``rn`` actually runs, so a stage inlist that ``rn``
+    never references is invisible to it. That failure mode is quiet and
+    expensive: the grid runs fewer stages than intended and calls every track
+    finished one stage early. This spots it so the caller can say so.
+
+    Args:
+        mesa_dir: Grid directory to scan.
+        stages: The stages discovery did find.
+        template_file: The grid's inlist template, if not mesa_dir/inlist_template.
+
+    Returns:
+        (filename, save name) pairs for each unclaimed declaration, sorted.
+    """
+    mesa_dir = Path(mesa_dir)
+    if template_file is None:
+        candidate = mesa_dir / "inlist_template"
+        template_file = candidate if candidate.is_file() else None
+
+    known_stems = {s.stem for s in stages}
+    # 'inlist' is the chain root and 'inlist_project' is the per-run copy the
+    # pipeline generates from the template -- neither is a stage inlist someone
+    # forgot to wire up.
+    skip = {"inlist", "inlist_pgstar", "inlist_project"}
+    skip.update(s.inlist for s in stages if s.inlist)
+    if template_file:
+        skip.add(Path(template_file).name)
+
+    found = []
+    for path in sorted(mesa_dir.glob("inlist*")):
+        if not path.is_file() or path.name in skip:
+            continue
+        try:
+            saves = _saves_in_file(path)
+        except OSError:
+            continue
+        for name, _source in saves:
+            if stem_for_save_name(name) not in known_stems:
+                found.append((path.name, name))
+    return found
+
+
+def warn_unreachable(mesa_dir: Union[str, Path], stages: list,
+                     template_file: Optional[Union[str, Path]] = None) -> list:
+    """Print a warning for each unclaimed stage inlist; returns what it found."""
+    found = unreachable_stage_inlists(mesa_dir, stages, template_file)
+    if not found:
+        return found
+    print(f"WARNING: {len(found)} inlist declaration(s) in {mesa_dir} are not reached by rn "
+          f"and will NOT become stages:")
+    for filename, save_name in found:
+        print(f"  {filename}: save_model_filename = '{save_name}'")
+    print("  Discovery follows the runs rn actually performs. Either reference these "
+          "inlists from rn, or name the stages explicitly, e.g.")
+    print(f"    --stages {','.join([s.stem for s in stages] + [stem_for_save_name(n) for _, n in found])}")
+    return found
+
+
 def save_stages(parent_dir: Union[str, Path], stages: list) -> Path:
     """
     Write the resolved stages to parent_dir/stages.json.
@@ -506,7 +568,10 @@ def resolve_stages(parent_dir: Union[str, Path],
         template_file: Inlist template, if it is not parent_dir/inlist_template.
         explicit: A --stages value, which wins over everything else.
         mesa_dir: Directory holding rn/inlist, if not parent_dir.
-        quiet: Suppress the note printed when the legacy guard fires.
+        quiet: Suppress the notes printed when the legacy guard fires or an
+            inlist declares a save that rn never reaches. Callers that set this
+            up (the grid submitters, the stages CLI) pass False so the user sees
+            them once, rather than once per array task.
 
     Returns:
         Ordered list of Stages, never empty.
@@ -540,6 +605,9 @@ def resolve_stages(parent_dir: Union[str, Path],
                   f"Pass --stages {stages[0].stem} to override.")
         return legacy_stages()
 
+    if not quiet:
+        warn_unreachable(mesa_dir or parent_dir, stages, template_file)
+
     return stages
 
 
@@ -571,11 +639,17 @@ def main() -> None:
     args = parser.parse_args()
 
     parent = Path(args.parent_dir).expanduser()
-    stages = resolve_stages(parent, template_file=args.template, explicit=args.stages,
-                            quiet=False)
+    # Resolved quietly so the resolved stages are printed first and any warning
+    # reads as a comment on them, rather than arriving before the header.
+    stages = resolve_stages(parent, template_file=args.template, explicit=args.stages)
     print(f"Grid directory: {parent}")
     print(f"Stages ({len(stages)}):")
     print(format_stages(stages, parent))
+    print()
+    # Checked even when --stages was given: an explicit list that misses an
+    # inlist's save is the same mistake, just made deliberately.
+    if not warn_unreachable(parent, stages, args.template):
+        print("Every save declaration in this directory is accounted for.")
     if args.write:
         print(f"Wrote {save_stages(parent, stages)}")
 

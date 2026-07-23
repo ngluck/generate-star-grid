@@ -13,6 +13,7 @@ from generate_star_grid.stages import (
     rename_save_declarations,
     resolve_stages,
     save_stages,
+    unreachable_stage_inlists,
     stage_save_path,
     stem_for_save_name,
 )
@@ -251,3 +252,49 @@ def test_rename_leaves_surplus_declarations_alone():
     assert n == 2
     assert "TAMS_RUN.mod" in out
     assert "'b.mod'" in out
+
+
+# --- unreachable stage inlists ---------------------------------------------
+
+def test_stage_inlist_rn_never_runs_is_flagged(tmp_path):
+    """The quiet failure: the grid runs one stage and calls tracks finished early."""
+    grid = write_grid(tmp_path / "g", {
+        "rn": "#!/bin/bash\n./star\n",
+        "inlist": BASE_INLIST,
+        "inlist_template": "&star_job\n save_model_filename = 'ZAMS_0.70.mod'\n/\n",
+        "inlist_tams": "&star_job\n save_model_filename = 'TAMS_0.70.mod'\n/\n",
+    })
+    stages = resolve_stages(grid)
+    assert stems(stages) == ["ZAMS"]
+    assert unreachable_stage_inlists(grid, stages) == [("inlist_tams", "TAMS_0.70.mod")]
+
+
+def test_nothing_flagged_when_rn_wires_every_stage(tmp_path):
+    grid = write_grid(tmp_path / "g", {
+        "rn": "#!/bin/bash\ndo_one inlist_project x\ndo_one inlist_tams y\n",
+        "inlist": BASE_INLIST,
+        "inlist_template": "&star_job\n save_model_filename = 'ZAMS_0.70.mod'\n/\n",
+        "inlist_tams": "&star_job\n save_model_filename = 'TAMS_0.70.mod'\n/\n",
+    })
+    stages = resolve_stages(grid)
+    assert stems(stages) == ["ZAMS", "TAMS"]
+    assert unreachable_stage_inlists(grid, stages) == []
+
+
+def test_nothing_flagged_for_a_plain_single_stage_grid(single_stage_grid):
+    """inlist and inlist_project are not forgotten stage inlists."""
+    stages = resolve_stages(single_stage_grid)
+    (single_stage_grid / "inlist_project").write_text(
+        "&star_job\n save_model_filename = 'TAMS_0.70.mod'\n/\n")
+    assert unreachable_stage_inlists(single_stage_grid, stages) == []
+
+
+def test_explicit_stages_silence_the_flag(tmp_path):
+    grid = write_grid(tmp_path / "g", {
+        "rn": "#!/bin/bash\n./star\n",
+        "inlist": BASE_INLIST,
+        "inlist_template": "&star_job\n save_model_filename = 'ZAMS_0.70.mod'\n/\n",
+        "inlist_tams": "&star_job\n save_model_filename = 'TAMS_0.70.mod'\n/\n",
+    })
+    stages = resolve_stages(grid, explicit="ZAMS,TAMS")
+    assert unreachable_stage_inlists(grid, stages) == []
