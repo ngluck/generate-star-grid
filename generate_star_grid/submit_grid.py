@@ -223,7 +223,7 @@ def cmd_start(args):
         "combine_mem": args.combine_mem,
         "combine_partition": args.combine_partition,
         "combine_mail_type": args.combine_mail_type,
-        "retry_once": not args.no_retry,
+        "retry_once": args.retry,
         "fail_threshold_mb": args.fail_threshold_mb,
         "merge_after": not args.no_merge_after,
         "merge_time": args.merge_time,
@@ -680,7 +680,7 @@ def cmd_expand(args):
         "combine_mem": args.combine_mem,
         "combine_partition": args.combine_partition,
         "combine_mail_type": args.combine_mail_type,
-        "retry_once": not args.no_retry,
+        "retry_once": args.retry,
         "fail_threshold_mb": args.fail_threshold_mb,
         "merge_after": not args.no_merge_after,
         "merge_time": args.merge_time,
@@ -786,7 +786,10 @@ if __name__ == "__main__":
     p_start.add_argument("--combine_mem", default="16G")
     p_start.add_argument("--combine_partition", default="day")
     p_start.add_argument("--combine_mail_type", default="ALL")
-    p_start.add_argument("--no_retry", action="store_true", help="Disable the retry-once-on-failure behavior.")
+    p_start.add_argument("--retry", action="store_true",
+                         help="Retry each failed task once before finalizing the batch. Off by default: re-running a track with the same settings usually reproduces the same failure, and the failure report already collects every failure with its reason. Worth enabling when failures are expected to be timeouts, which resume from their MESA photos and can make real progress.")
+    p_start.add_argument("--no_retry", action="store_true",
+                         help="Deprecated no-op: retrying is already off by default. Accepted so existing queue files and scripts keep working.")
     p_start.add_argument("--fail_threshold_mb", type=float, default=5.0,
                          help="Deprecated and ignored: a task now counts as failed if and only if it never produced its save file. Accepted so existing queue files keep working.")
     p_start.add_argument("--no_merge_after", action="store_true",
@@ -835,7 +838,10 @@ if __name__ == "__main__":
     p_expand.add_argument("--combine_mem", default="16G")
     p_expand.add_argument("--combine_partition", default="day")
     p_expand.add_argument("--combine_mail_type", default="ALL")
-    p_expand.add_argument("--no_retry", action="store_true")
+    p_expand.add_argument("--retry", action="store_true",
+                          help="Retry each failed task once before finalizing the batch. Off by default: re-running a track with the same settings usually reproduces the same failure, and the failure report already collects every failure with its reason. Worth enabling when failures are expected to be timeouts, which resume from their MESA photos and can make real progress.")
+    p_expand.add_argument("--no_retry", action="store_true",
+                          help="Deprecated no-op: retrying is already off by default. Accepted so existing queue files and scripts keep working.")
     p_expand.add_argument("--fail_threshold_mb", type=float, default=5.0,
                           help="Deprecated and ignored: a task now counts as failed if and only if it never produced its save file. Accepted so existing queue files keep working.")
     p_expand.add_argument("--no_merge_after", action="store_true")

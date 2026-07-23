@@ -192,8 +192,8 @@ The save file's location is parameterized (`save_dir`, `save_prefix`,
 into e.g. `grid_CONT/` under a `cont_` prefix.
 
 This is also the function the combine/cleanup job calls internally to detect
-failures before retrying and again after the retry. After the retry, the
-still-failed folder names are passed to `make_grid --exclude_dirs`, which
+failures (and again after the retry, if `--retry` was passed). The still-failed
+folder names are passed to `make_grid --exclude_dirs`, which
 filters them out before writing `combined_history.hdf5` — so the exclusion
 is real, not just a warning in `notes.txt`.
 

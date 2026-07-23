@@ -7,9 +7,9 @@ For grids too large to keep on disk all at once (e.g. 500 masses × 10 metallici
 one disk-bounded batch at a time) and an **inner** parameter (swept within each
 batch's SLURM array). Each batch: copies the template directory, submits the array job,
 then submits a combine/cleanup job that builds that batch's `combined_history.hdf5`,
-retries any failed tasks once, deletes the batch's run artifacts, and only then
-triggers the next outer batch — so peak disk usage is bounded by a single batch's
-footprint, not the whole grid's.
+writes its [failure report](troubleshooting.md#the-failure-report), deletes the batch's
+run artifacts, and only then triggers the next outer batch — so peak disk usage is
+bounded by a single batch's footprint, not the whole grid's.
 
 ````{tip}
 This requires a parameter to batch *along*. For a flat grid with no outer
@@ -65,8 +65,8 @@ batches already exist.
 This submits the first batch and writes `queue.json`, which tracks the remaining
 outer batches and all per-batch configuration. Each batch's combine/cleanup job
 calls `submit_grid next --queue_file ...` itself once it actually finishes, rather
-than via a pre-declared SLURM dependency — this is what lets a failed-task retry
-happen first without losing track of when the batch is really done.
+than via a pre-declared SLURM dependency — this is what lets an optional
+failed-task retry happen first without losing track of when the batch is really done.
 
 Key SLURM flags for the array jobs (all overridable via `submit_grid start`):
 
@@ -153,9 +153,27 @@ partition (e.g. `gpu_devel`), there is no CPU competition with the `day` partiti
 `--max_cpus` is not needed.
 ````
 
-## Retry Job Naming
+## Retrying Failed Tasks (`--retry`)
 
-When a combine/cleanup job detects failed MESA tasks and retries them, the retry array
+Retrying is **off by default**. Re-running a track with the same settings usually
+reproduces the same failure, so the compute is better spent after reading the
+[failure report](troubleshooting.md#the-failure-report) and changing something.
+
+Pass `--retry` to `submit_grid start`/`expand` to retry each failed task once
+before the batch is finalized. It is worth enabling when you expect failures to
+be **timeouts** rather than numerical give-ups: a retried task resumes from its
+MESA photos (see [Resuming Timed-Out Runs](troubleshooting.md#resuming-timed-out-runs-photo-restart)),
+so it continues from where it stopped instead of recomputing from scratch. The
+failure report's reason breakdown is what tells you which case you are in.
+
+````{note}
+`--no_retry` is still accepted and is now a no-op, since off is the default.
+Existing queue files keep working unchanged.
+````
+
+### Retry Job Naming
+
+When a combine/cleanup job retries failed MESA tasks, the retry array
 job is submitted with the prefix `retry_` in its SLURM job name — e.g.
 `retry_Z0p001_alpha2p00` instead of `mesa_Z0p001_alpha2p00`. This makes retries
 immediately distinguishable in `squeue`, `sacct`, and SLURM notification email subject
@@ -164,7 +182,8 @@ written to the batch's `combine_<jobid>.out` stdout file.
 
 ## Preserved Directories for Persistent Failures
 
-If a task still fails after the one retry, two things happen:
+When a task is left failed — immediately, or after the one retry if `--retry`
+was passed — two things happen:
 
 - Its `M_*` run directory is **not** deleted during cleanup, so you can inspect
   the history files, MESA output, and any individual log files to diagnose what
@@ -178,9 +197,8 @@ initial conditions.
 
 Each batch's combine job also writes a
 [failure report](troubleshooting.md#the-failure-report) into the batch directory,
-collecting every failed track and the reason for each — so after the one retry,
-what remains failed is inspectable in a single document rather than by opening
-logs one at a time.
+collecting every failed track and the reason for each — so what failed is
+inspectable in a single document rather than by opening logs one at a time.
 
 ## Expanding an Existing Grid
 
@@ -247,7 +265,7 @@ Missing batches:
 ````
 
 The expand run behaves like a normal `submit_grid start` queue from there: one batch at
-a time, retrying failed tasks once, then automatically triggering `merge_grids expand`
+a time, then automatically triggering `merge_grids expand`
 once all missing batches are done.
 
 ````{note}
@@ -433,6 +451,37 @@ Refusing to delete intermediates: master has 4700112 rows but the 16 chunk
 file(s) total 4821330. Master left in place; chunks kept for inspection.
 ```
 
+### Verifying Nothing Was Stranded
+
+`chunk_grid verify` checks, per chunk, that every model which produced a save
+file actually reached that chunk's HDF5. It compares two independently derived
+numbers — how many of the chunk's task ids have a save file, and how many
+distinct tracks its `combined_history.hdf5` holds — and flags any completed
+model still sitting in the grid directory as a run directory.
+
+````bash
+python -m generate_star_grid.chunk_grid verify --parent_dir /path/to/my_grid
+````
+
+```text
+chunk                           range  completed  in HDF5   status
+chunk_00000_00511               0-511        507      507   OK
+chunk_00512_01023            512-1023        505      505   OK
+...
+chunk_03584_04095           3584-4095          1        -   not compressed yet (1 completed on disk)
+
+3535 completed model(s); 3534 track(s) in compressed chunks.
+
+1 chunk(s) not compressed yet (normal while the grid is running).
+```
+
+It is safe to run at any time, including mid-run, and reads the chunk bounds
+from `chunk_queue.json` (override with `--num_points` / `--chunk_size`). A
+`STRANDED` row means a chunk's step job never ran or its compression died
+partway; re-run `chunk_grid compress` for that chunk index to fold the models
+in. The command exits non-zero when anything is stranded, so it can gate a
+follow-on job.
+
 ### Running the Steps Manually
 
 Each stage is a standalone subcommand, useful for recovering a run whose chain
@@ -472,7 +521,7 @@ the intermediates.
 | Grid shape | Outer × inner Cartesian product | Flat task-id range (e.g. a joint Sobol cloud) |
 | Split along | An outer parameter's values | Contiguous task-id chunks |
 | Output | One `combined_history.hdf5` per batch, merged at the end | One per chunk, merged into a master at the end |
-| Failed tasks | Retried once automatically, then excluded | Skipped; directories left for manual handling |
+| Failed tasks | Excluded; retried once only with `--retry` | Skipped; directories left for manual handling |
 | Failure report | Written by each batch's combine job | Written by `finalize` |
 | Parallel queues | Yes (`--parallel N`) | No — one chunk at a time by design |
 

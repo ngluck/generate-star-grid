@@ -37,6 +37,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
+
 from .grid_utils import (
     PARAM_FORMAT,
     coerce_cli_values,
@@ -254,6 +256,81 @@ def compress_chunk(
         print(f"{chunk_dir.name}: wrote {out.name}; run directories kept.")
 
     return out
+
+
+def verify_chunk_coverage(
+    parent_dir: Path,
+    bounds: list,
+    hdf5_key: str = "history",
+    save_dir: str = "grid_TAMS",
+    save_prefix: str = "TAMS_",
+    save_suffix: str = ".mod",
+) -> list:
+    """
+    Check that every completed model in each chunk reached that chunk's HDF5.
+
+    Completion is the save file, so this compares two independently derived
+    numbers: how many of a chunk's task ids produced a save file, and how many
+    distinct tracks its combined_history.hdf5 actually holds. They agree when
+    nothing was stranded.
+
+    Also reports models that completed but are still sitting in parent_dir as
+    run directories -- the signature of a chunk whose step job never ran, whose
+    compression died partway, or that is simply still in flight.
+
+    Args:
+        parent_dir: Grid run directory.
+        bounds: Inclusive (start, end) task-id pairs, as from chunk_bounds.
+        hdf5_key: HDF5 store key the chunks were written with.
+        save_dir, save_prefix, save_suffix: Completion save file location.
+
+    Returns:
+        One dict per chunk with 'name', 'start', 'end', 'completed', 'tracks',
+        'compressed' (whether its HDF5 exists), 'uncompressed' (names of
+        completed models still in parent_dir), and 'ok'.
+    """
+    parent_dir = Path(parent_dir)
+
+    # task id -> run directory name, taken from the logs rather than rebuilt, so
+    # the check does not depend on reproducing the cloud.
+    by_task = {}
+    for log in parent_dir.glob("LOGS/log_*_TASK_*.txt"):
+        match = re.search(r"_TASK_(\d+)$", log.stem)
+        if match:
+            by_task[int(match.group(1))] = re.sub(
+                r"_TASK_\d+$", "", re.sub(r"^log_", "", log.stem))
+
+    results = []
+    for start, end in bounds:
+        chunk_dir = chunk_dir_for(parent_dir, start, end)
+        completed, uncompressed = 0, []
+        for task_id in range(start, end + 1):
+            folder = by_task.get(task_id)
+            if folder is None:
+                continue
+            if not (parent_dir / save_dir / f"{save_prefix}{folder}{save_suffix}").exists():
+                continue
+            completed += 1
+            if (parent_dir / folder).is_dir():
+                uncompressed.append(folder)
+
+        hdf5 = chunk_dir / COMBINED_NAME
+        tracks = None
+        if hdf5.exists():
+            with pd.HDFStore(str(hdf5), mode="r") as store:
+                tracks = int(store.select(hdf5_key, columns=["Track"])["Track"].nunique())
+
+        results.append({
+            "name": chunk_dir.name,
+            "start": start,
+            "end": end,
+            "completed": completed,
+            "tracks": tracks,
+            "compressed": hdf5.exists(),
+            "uncompressed": uncompressed,
+            "ok": (tracks == completed) if hdf5.exists() else not uncompressed,
+        })
+    return results
 
 
 def find_chunk_dirs(parent_dir: Path) -> list:
@@ -542,6 +619,56 @@ def _submit_finalize(config: dict) -> None:
     print(f"Submitted finalize job {job}.")
 
 
+def cmd_verify(args) -> None:
+    parent = Path(_resolve_parent_dir(args.parent_dir)).resolve()
+    if args.num_points and args.chunk_size:
+        bounds = chunk_bounds(args.num_points, args.chunk_size)
+    else:
+        queue_file = parent / CHUNK_QUEUE_NAME
+        if not queue_file.exists():
+            raise SystemExit(
+                f"No {CHUNK_QUEUE_NAME} in {parent}; pass --num_points and --chunk_size.")
+        config = json.loads(queue_file.read_text())["config"]
+        bounds = [tuple(b) for b in config["bounds"]]
+
+    results = verify_chunk_coverage(parent, bounds, hdf5_key=args.hdf5_key)
+    print(f"{'chunk':<24}{'range':>13}{'completed':>11}{'in HDF5':>9}   status")
+    stranded, pending = [], []
+    for r in results:
+        n_left = len(r["uncompressed"])
+        if not r["compressed"]:
+            status = "not compressed yet"
+            if n_left:
+                status += f" ({n_left} completed on disk)"
+                pending.append(r)
+        elif r["ok"] and not n_left:
+            status = "OK"
+        else:
+            status = "STRANDED"
+            stranded.append(r)
+        tracks = r["tracks"] if r["tracks"] is not None else "-"
+        task_range = f"{r['start']}-{r['end']}"
+        print(f"{r['name']:<24}{task_range:>13}{r['completed']:>11}{str(tracks):>9}   {status}")
+
+    total_done = sum(r["completed"] for r in results)
+    total_tracks = sum(r["tracks"] or 0 for r in results)
+    print(f"\n{total_done} completed model(s); {total_tracks} track(s) in compressed chunks.")
+
+    if stranded:
+        print(f"\n{len(stranded)} chunk(s) have completed models that never reached their HDF5:")
+        for r in stranded:
+            n_left = len(r["uncompressed"])
+            extra = f", {n_left} still on disk" if n_left else ""
+            print(f"  {r['name']}: {r['completed']} completed vs {r['tracks']} in HDF5{extra}")
+        print("Re-run 'chunk_grid compress' for those chunk indices to fold them in.")
+        raise SystemExit(1)
+
+    if pending:
+        print(f"\n{len(pending)} chunk(s) not compressed yet (normal while the grid is running).")
+    else:
+        print("Every completed model is accounted for in its chunk HDF5.")
+
+
 def cmd_submit(args) -> None:
     args.parent_dir = _resolve_parent_dir(args.parent_dir)
     parent = Path(args.parent_dir).resolve()
@@ -650,6 +777,17 @@ def _build_parser() -> argparse.ArgumentParser:
     p_fin.add_argument("--report_name", default=DEFAULT_REPORT_NAME,
                        help=f"Filename for the failure report (default: {DEFAULT_REPORT_NAME}).")
     p_fin.set_defaults(func=cmd_finalize)
+
+    p_ver = sub.add_parser(
+        "verify",
+        help="Check that every completed model reached its chunk's HDF5.")
+    p_ver.add_argument("--parent_dir", default=None, help="Grid dir (default: current dir).")
+    p_ver.add_argument("--hdf5_key", default="history")
+    p_ver.add_argument("--num_points", type=int, default=None,
+                       help=f"Overrides the bounds in {CHUNK_QUEUE_NAME}.")
+    p_ver.add_argument("--chunk_size", type=int, default=None,
+                       help=f"Overrides the bounds in {CHUNK_QUEUE_NAME}.")
+    p_ver.set_defaults(func=cmd_verify)
 
     p_sub = sub.add_parser("submit", help="Generate + submit the chained chunked SLURM jobs.")
     p_sub.add_argument("--parent_dir", default=None, help="Grid dir (default: current dir).")
