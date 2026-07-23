@@ -835,10 +835,15 @@ def load_mesa_histories_from_subdirs(
 
 
 def find_failed_tasks(
-    dest: Union[str, Path], keys: list, threshold_mb: float = 5.0
+    dest: Union[str, Path],
+    keys: list,
+    threshold_mb: Optional[float] = None,
+    save_dir: str = "grid_TAMS",
+    save_prefix: str = "TAMS_",
+    save_suffix: str = ".mod",
 ) -> list:
     """
-    Find SLURM array tasks whose MESA run didn't produce a usable history.data.
+    Find SLURM array tasks that never produced their completion save file.
 
     Generalizes the old slurm/find_failed.sh (which hardcoded a single Y/Z/alpha
     combination) to any grid: it reconstructs each task's model directory name
@@ -846,21 +851,30 @@ def find_failed_tasks(
     ``log_`` prefix, ``.txt`` suffix, and ``_TASK_<id>`` suffix), so it works
     regardless of which parameters were swept or what values they took.
 
-    A task is considered failed if it's missing its grid_TAMS/TAMS_*.mod save
-    file, or if DATA/history.data is missing or smaller than threshold_mb.
-    The TAMS file is what MESA writes on a genuine stop condition
-    (``save_model_when_terminate``), so its absence distinguishes a finished
-    track from one cut off mid-run -- e.g. a task that hit the SLURM --time
-    limit can still have accumulated history.data well past threshold_mb
-    without ever reaching TAMS, and would otherwise be missed.
+    A task is failed if and only if its save file is absent. That file is what
+    MESA writes on a genuine stop condition (``save_model_when_terminate``), so
+    it is the one signal that distinguishes a finished track from one cut off
+    mid-run. The size of history.data is not consulted: a track killed at the
+    SLURM time limit routinely accumulates a large history.data without ever
+    reaching a stop condition, while a short-lived track can finish correctly
+    with a small one -- in both directions the size says nothing about whether
+    the run completed.
+
+    The save file's location is parameterized so the same check applies to later
+    evolutionary stages, which save elsewhere (e.g. grid_CONT/ for continuation
+    runs) or under a different prefix.
 
     Args:
-        dest: Grid run directory containing LOGS/, grid_TAMS/, and the model
-            subdirectories.
+        dest: Grid run directory containing LOGS/, the save directory, and the
+            model subdirectories.
         keys: Parameter labels to extract from each failed model's directory
             name (e.g. ['M', 'Y', 'Z', 'alpha'], or labels for any extra
             --param parameters), via extract_constants_from_subdir_name.
-        threshold_mb: Minimum acceptable history.data size, in MB.
+        threshold_mb: Deprecated and ignored; accepted so existing queue files
+            and generated SLURM scripts that still pass it keep working.
+        save_dir: Subdirectory of dest holding the completion save files.
+        save_prefix: Save filename prefix before the run directory name.
+        save_suffix: Save filename suffix.
 
     Returns:
         List of dicts, one per failed task, each with keys 'task_id' (int),
@@ -876,15 +890,9 @@ def find_failed_tasks(
         task_id = int(match.group(1))
         folder_name = re.sub(r"^log_", "", log.stem)
         folder_name = re.sub(r"_TASK_\d+$", "", folder_name)
-        history_file = dest / folder_name / "DATA" / "history.data"
-        tams_file = dest / "grid_TAMS" / f"TAMS_{folder_name}.mod"
+        save_file = dest / save_dir / f"{save_prefix}{folder_name}{save_suffix}"
 
-        ok = (
-            tams_file.exists()
-            and history_file.exists()
-            and history_file.stat().st_size >= threshold_mb * 1024 * 1024
-        )
-        if not ok:
+        if not save_file.exists():
             params = extract_constants_from_subdir_name(folder_name, keys)
             failed.append({"task_id": task_id, "folder": folder_name, "params": params})
 

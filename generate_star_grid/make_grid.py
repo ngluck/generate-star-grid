@@ -2,10 +2,12 @@ import argparse
 from pathlib import Path
 
 from .grid_utils import load_history_with_constants_from_profile, cleanup_grid_data
+from .failure_report import DEFAULT_REPORT_NAME, write_failure_report
 
 
 def main(parent_dir: Path, save_as_hdf5: bool, hdf5_filename: str, constant_columns: list,
-         cleanup: str = "none", exclude_dirs: list = None):
+         cleanup: str = "none", exclude_dirs: list = None,
+         failure_report: bool = True, report_name: str = DEFAULT_REPORT_NAME):
     """
     Load MESA history files from a grid run directory and optionally save to HDF5.
 
@@ -19,6 +21,11 @@ def main(parent_dir: Path, save_as_hdf5: bool, hdf5_filename: str, constant_colu
             archive ('zip') or remove ('delete') each model's DATA/ folder
             (see cleanup_grid_data). Only applies when save_as_hdf5 is True.
         exclude_dirs: Subdirectory names to skip (e.g. still-failed tasks).
+        failure_report: Write a failure report collecting every track that
+            never produced its save file, and why (see failure_report). On by
+            default -- it is written before any cleanup, while the logs and
+            failed run directories are still in place.
+        report_name: Filename for that report, written into parent_dir.
     """
     df = load_history_with_constants_from_profile(
         parent_dir=parent_dir,
@@ -30,6 +37,9 @@ def main(parent_dir: Path, save_as_hdf5: bool, hdf5_filename: str, constant_colu
     )
     print(f"Loaded {len(df)} preview rows.")
     print("Preview:\n", df.head())
+
+    if failure_report:
+        write_failure_report(parent_dir, keys=constant_columns, report_name=report_name)
 
     if save_as_hdf5 and not df.empty:
         cleanup_grid_data(parent_dir, cleanup)
@@ -57,7 +67,13 @@ if __name__ == "__main__":
     parser.add_argument("--exclude_dirs", nargs="*", default=None,
                         help="Subdirectory names to exclude from the HDF5 "
                              "(e.g. still-failed task directories).")
+    parser.add_argument("--no_failure_report", dest="failure_report", action="store_false",
+                        help="Skip writing the failure report. By default one is written "
+                             "into the grid directory, collecting every track that never "
+                             "produced its save file and the reason for each.")
+    parser.add_argument("--report_name", default=DEFAULT_REPORT_NAME,
+                        help=f"Filename for the failure report (default: {DEFAULT_REPORT_NAME}).")
     args = parser.parse_args()
 
     main(Path(args.parent_dir).expanduser(), args.save, args.hdf5_filename, args.constants,
-         args.cleanup, args.exclude_dirs)
+         args.cleanup, args.exclude_dirs, args.failure_report, args.report_name)

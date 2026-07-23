@@ -74,6 +74,7 @@ The modules installed, each runnable with `python -m generate_star_grid.<module>
 | `make_grid` | Combine finished tracks into `combined_history.hdf5` |
 | `merge_grids` | Merge or expand per-batch HDF5s into one grid |
 | `grid_inventory` | Report outer-parameter coverage of a merged grid |
+| `failure_report` | Collect every failed track and its reason into one report |
 | `grid_utils_cont` | Continuation runs past TAMS |
 | `make_yrec_grid`, `make_starpasta_grid` | HDF5 builders for YREC / StarPASTA output |
 

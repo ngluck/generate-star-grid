@@ -176,6 +176,12 @@ If a task still fails after the one retry, two things happen:
 The corresponding entry in `notes.txt` records the task ID, folder name, and
 initial conditions.
 
+Each batch's combine job also writes a
+[failure report](troubleshooting.md#the-failure-report) into the batch directory,
+collecting every failed track and the reason for each — so after the one retry,
+what remains failed is inspectable in a single document rather than by opening
+logs one at a time.
+
 ## Expanding an Existing Grid
 
 If you have a finished merged grid and want to add new outer-parameter combinations
@@ -394,13 +400,14 @@ inspected or re-run. The run directories are redundant once the HDF5 exists:
 TAMS models are already in `grid_TAMS/`, profiles in `grid_profiles/`, inlists in
 `grid_inlists/`, and MESA stdout in `LOGS/`.
 
-````{warning}
-`chunk_grid` does **not** retry failed tasks the way `submit_grid` does. Tasks
-that never produced a TAMS file are skipped by compression and their directories
-are left in place; the queue moves on to the next chunk regardless. Check for
-leftover `M_*` directories when the run finishes, and use
-[`submit_grid check-failed`](troubleshooting.md#submit_grid-check-failed) to
-diagnose them.
+````{note}
+`chunk_grid` does not retry failed tasks the way `submit_grid` does — re-running
+a track unchanged usually reproduces the same failure. Tasks that never produced
+a TAMS file are skipped by compression, their directories are left in place, and
+the queue moves on. `finalize` then writes a
+[failure report](troubleshooting.md#the-failure-report) collecting every one of
+them and why, so the whole grid's failures can be read at once and acted on
+deliberately.
 ````
 
 ### Finalizing
@@ -466,6 +473,7 @@ the intermediates.
 | Split along | An outer parameter's values | Contiguous task-id chunks |
 | Output | One `combined_history.hdf5` per batch, merged at the end | One per chunk, merged into a master at the end |
 | Failed tasks | Retried once automatically, then excluded | Skipped; directories left for manual handling |
+| Failure report | Written by each batch's combine job | Written by `finalize` |
 | Parallel queues | Yes (`--parallel N`) | No — one chunk at a time by design |
 
 ## Continuation Runs (Post-MS Evolution)

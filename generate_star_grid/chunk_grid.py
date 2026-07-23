@@ -46,6 +46,7 @@ from .grid_utils import (
     make_run_dir_name,
     parse_extra_params,
 )
+from .failure_report import DEFAULT_REPORT_NAME, write_failure_report
 from .merge_grids import merge_batch_hdf5, _hdf5_nrows
 
 CHUNK_DIR_GLOB = "chunk_*"
@@ -410,6 +411,12 @@ def cmd_merge(args) -> None:
 def cmd_finalize(args) -> None:
     parent = Path(_resolve_parent_dir(args.parent_dir)).resolve()
     chunk_dirs = find_chunk_dirs(parent)
+
+    # Written before the merge can fail: the logs and the failed run directories
+    # are the only record of why a track is missing, and they outlive the chunks.
+    if args.failure_report:
+        write_failure_report(parent, keys=args.constants, report_name=args.report_name)
+
     master = merge_master(parent, hdf5_key=args.hdf5_key)
     if master is None:
         raise SystemExit("No chunks to merge; nothing finalized.")
@@ -501,7 +508,8 @@ module load miniconda
 conda activate {conda_env}
 
 "{python}" -m generate_star_grid.chunk_grid finalize \\
-    --parent_dir "{parent}"
+    --parent_dir "{parent}" \\
+    --constants {' '.join(shlex.quote(c) for c in config['constants'])}
 """)
     (parent / "run_finalize.sh").chmod(0o755)
 
@@ -635,6 +643,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_fin.add_argument("--hdf5_key", default="history")
     p_fin.add_argument("--keep_chunks", action="store_true",
                        help="Keep the intermediate chunk dirs instead of deleting them.")
+    p_fin.add_argument("--constants", nargs="*", default=DEFAULT_CONSTANTS,
+                       help="Parameter labels to report for each failed track.")
+    p_fin.add_argument("--no_failure_report", dest="failure_report", action="store_false",
+                       help="Skip writing the failure report (written by default).")
+    p_fin.add_argument("--report_name", default=DEFAULT_REPORT_NAME,
+                       help=f"Filename for the failure report (default: {DEFAULT_REPORT_NAME}).")
     p_fin.set_defaults(func=cmd_finalize)
 
     p_sub = sub.add_parser("submit", help="Generate + submit the chained chunked SLURM jobs.")

@@ -1,5 +1,101 @@
 # Troubleshooting
 
+## The Failure Report
+
+Every grid writes a `failure_report.txt` into its grid directory collecting
+**all** failed tracks and the reason for each, so the whole grid's failures can
+be inspected together instead of one log at a time. It is written by default —
+by `make_grid` (and therefore by every `submit_grid` combine job) and by
+`chunk_grid finalize`.
+
+A track counts as failed if and only if it never produced its **completion save
+file** (`grid_TAMS/TAMS_<dir>.mod` for a main-sequence run). That file is
+written by `save_model_when_terminate` on a genuine stop condition, so its
+absence is the one signal that separates a finished track from one cut short.
+
+Nothing is retried automatically on the strength of this report: re-running the
+same track with the same settings usually reproduces the same failure, so the
+compute is better spent after you have read the report and changed something.
+
+### Reading the Report
+
+```text
+Tasks examined: 4096
+Completed:      3534 (86.3%)
+Failed:         562
+
+SUMMARY BY REASON
+------------------------------------------------------------------------------
+   511  log ends mid-run with no termination code (cut off)
+    37  MESA terminated: min_timestep_limit
+    14  cancelled at the SLURM time limit
+
+PARAMETER RANGE PER REASON
+------------------------------------------------------------------------------
+  log ends mid-run with no termination code (cut off)
+      M 0.7014-1.7984 (med 1.2561), Z 0.000102-0.0396 (med 0.00204), alpha 1.0-3.0 (med 2.0)
+  MESA terminated: min_timestep_limit
+      M 0.7024-1.675 (med 0.7957), Z 0.0001-0.0387 (med 0.017), alpha 1.11-2.90 (med 1.81)
+```
+
+The median matters more than the range on a Sobol grid, where almost every
+reason spans the whole space. Above, the `min_timestep_limit` failures sit at
+median M≈0.80 and Z≈0.017 against the cut-off group's M≈1.26 and Z≈0.002 —
+MESA is giving up on the *low-mass, metal-rich* corner, which is a timestep-control
+problem to fix in the inlist. The cut-off group skews to high mass, which is a
+wall-clock problem to fix with `--array_time`.
+
+Each failed track is then listed under its reason with its parameters, the last
+MESA model number reached, and paths to both its MESA log and its SLURM output.
+
+### Where the Reasons Come From
+
+No single source is sufficient, so three are merged:
+
+| Source | What it establishes |
+|---|---|
+| The save file's absence | That the track failed at all |
+| `LOGS/log_<dir>_TASK_<id>.txt` | MESA's own verdict (`termination code: ...`), or where it was cut off |
+| `slurm_logs/*_<id>.out` | The SLURM-level cause — a time limit or an OOM kill never appears in the MESA log |
+
+Categories, in the order they are decided:
+
+| Category | Meaning |
+|---|---|
+| `mesa_terminated` | MESA printed a termination code but saved nothing — it gave up for a numerical or physical reason |
+| `slurm_timeout` | SLURM cancelled the task at its time limit |
+| `slurm_oom` | The task was killed for exceeding its memory allocation |
+| `truncated` | The log stops mid-step with no verdict from either side — cut off by a time limit, node failure, or kill |
+| `no_mesa_output` | The log is missing or empty: the task died before MESA started, typically an environment problem |
+| `never_started` | No log and no run directory — the array task never ran |
+
+### Running It Yourself
+
+The report can be regenerated at any time without re-running anything:
+
+````bash
+python -m generate_star_grid.failure_report --parent_dir /path/to/my_grid
+````
+
+````{tab-set}
+```{tab-item} Print instead of write
+python -m generate_star_grid.failure_report --parent_dir /path/to/my_grid --stdout
+```
+```{tab-item} Cap the per-reason listing
+python -m generate_star_grid.failure_report --parent_dir /path/to/my_grid \
+    --max_detail_per_reason 20
+```
+```{tab-item} A continuation run's save files
+python -m generate_star_grid.failure_report --parent_dir /path/to/my_grid \
+    --save_dir grid_CONT --save_prefix cont_
+```
+````
+
+`--save_dir` / `--save_prefix` / `--save_suffix` exist so the completion test
+stays valid for later evolutionary stages, which save elsewhere or under another
+prefix. Pass `--no_failure_report` to `make_grid` or `chunk_grid finalize` to
+skip writing it.
+
 ## Diagnosing Failed Array Tasks
 
 ### Quick check with `find_failed.sh`
@@ -26,21 +122,30 @@ grids with other or multiple swept parameters, use `submit_grid check-failed` in
 
 ### `submit_grid check-failed`
 
-`check-failed` is the general-purpose failure detector. It scans the `LOGS/` directory
-for per-task log files, reconstructs each task's model directory name from the log
-filename, and checks two things for each one: whether it has a `grid_TAMS/TAMS_*.mod`
-save file, and whether `DATA/history.data` exists and meets a minimum size threshold.
-A task is considered failed if either check fails — its TAMS file is missing, or
-`history.data` is missing or smaller than `--threshold_mb` (default: 5 MB).
+`check-failed` is the general-purpose failure detector, and the machine-readable
+counterpart to [the failure report](#the-failure-report). It scans the `LOGS/`
+directory for per-task log files, reconstructs each task's model directory name
+from the log filename, and reports the task as failed if its
+`grid_TAMS/TAMS_*.mod` save file is absent.
 
-The TAMS check matters because `history.data` size alone isn't a reliable signal
-of completion. A task can accumulate well over `threshold_mb` of `history.data`
-and still never finish — either because it hit the SLURM `--time` limit mid-run,
-or because MESA itself gave up (e.g. `termination code: min_timestep_limit` after
-exhausting solver retries) without reaching a real stop condition. `grid_TAMS/TAMS_*.mod`
-is only ever written by `save_model_when_terminate` on a genuine termination, so its
-absence is what actually distinguishes a finished track from one cut short — `history.data`
-size on its own would silently pass both of those cases as successes.
+That save file is the whole test. It is written by `save_model_when_terminate`
+on a genuine stop condition, so its absence is what distinguishes a finished
+track from one cut short — whether the task hit the SLURM `--time` limit mid-run
+or MESA itself gave up (e.g. `termination code: min_timestep_limit` after
+exhausting solver retries).
+
+````{note}
+Earlier versions also required `DATA/history.data` to exceed `--threshold_mb`.
+That check is gone: file size measures how long a track ran, not whether it
+finished. A track killed at the time limit routinely exceeds any threshold
+without ever completing, while a legitimately short track can finish with a
+small history file. It was also actively wrong after any pipeline stage that
+reclaims disk — on a chunked grid whose completed models have been folded into
+their HDF5 and deleted, the size check reports every task in the grid as failed.
+
+`--threshold_mb` and `--fail_threshold_mb` are still accepted and ignored, so
+existing queue files and generated SLURM scripts keep working unchanged.
+````
 
 ````bash
 python -m generate_star_grid.submit_grid check-failed \
@@ -67,7 +172,7 @@ For example:
 |---|---|---|
 | `--dest` | yes | Path to the batch directory (contains `LOGS/` and model subdirectories) |
 | `--keys` | yes | Comma-separated parameter labels to extract from the folder name, e.g. `M,Y,Z,alpha` |
-| `--threshold_mb` | no | Minimum acceptable `history.data` size in MB (default: `5.0`) |
+| `--threshold_mb` | no | Deprecated and ignored; accepted for backward compatibility |
 
 #### How it works internally
 
@@ -78,44 +183,19 @@ For example:
 3. Reconstructs the model subdirectory name by stripping the `log_` prefix and
    `_TASK_<id>` suffix — this works for any parameter combination without any
    hardcoded assumptions
-4. Checks whether `grid_TAMS/TAMS_<folder>.mod` exists **and** whether
-   `<folder>/DATA/history.data` exists and is at least `threshold_mb` in size —
-   a task must pass both checks to count as succeeded
+4. Checks whether the completion save file `grid_TAMS/TAMS_<folder>.mod` exists —
+   the sole test for whether the task succeeded
 5. Returns a list of dicts with `task_id`, `folder`, and `params` for each failure
+
+The save file's location is parameterized (`save_dir`, `save_prefix`,
+`save_suffix`), so the same check applies to later evolutionary stages that save
+into e.g. `grid_CONT/` under a `cont_` prefix.
 
 This is also the function the combine/cleanup job calls internally to detect
 failures before retrying and again after the retry. After the retry, the
 still-failed folder names are passed to `make_grid --exclude_dirs`, which
 filters them out before writing `combined_history.hdf5` — so the exclusion
 is real, not just a warning in `notes.txt`.
-
-#### Tuning the failure threshold
-
-Since the TAMS check is the real completion signal, `--threshold_mb` only exists
-to catch a `history.data` that's missing, empty, or truncated to a near-useless
-stub — it's a corruption floor, not a completeness check. The default (5 MB) is
-already permissive enough for short legitimate tracks (e.g. high-mass stars that
-terminate quickly), so you generally shouldn't need to touch it. Note that a task
-missing its `grid_TAMS/TAMS_*.mod` save file is always reported as failed
-regardless of this setting, since that means the track never reached a real
-termination, no matter how much `history.data` it accumulated.
-
-Raise it if you want a stricter sanity floor for a particular grid:
-
-```bash
-python -m generate_star_grid.submit_grid check-failed \
-    --dest /path/to/batch_dir --keys M,Y,Z,alpha \
-    --threshold_mb 10.0
-```
-
-For grids run via `submit_grid start`, pass `--fail_threshold_mb` to bake the
-threshold into the generated combine/cleanup script:
-
-```bash
-python -m generate_star_grid.submit_grid start \
-    ... \
-    --fail_threshold_mb 10.0
-```
 
 #### Resubmitting failed tasks manually
 

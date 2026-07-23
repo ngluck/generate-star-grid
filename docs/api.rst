@@ -73,6 +73,14 @@ chunk_grid
    :undoc-members:
    :show-inheritance:
 
+failure_report
+--------------
+
+.. automodule:: generate_star_grid.failure_report
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 grid_inventory
 --------------
 

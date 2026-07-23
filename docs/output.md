@@ -18,7 +18,7 @@ my_grid_run/
 :::
 :::{tab-item} After Running
 ```{code-block} text
-:emphasize-lines: 10,11,12,13,14,15,16,17,18,19,20,21,22,23
+:emphasize-lines: 10,11,12,13,14,15,16,17,18,19,20,21,22,23,24
 my_grid_run/
 ├── inlist_template
 ├── inlist
@@ -29,6 +29,7 @@ my_grid_run/
 ├── star
 ├── mk
 ├── notes.txt                                  # constant/swept params, spacing, formats used
+├── failure_report.txt                         # every failed track and why (see Troubleshooting)
 ├── M_0.70_Y_0.27_Z_0.02_alpha_2.0/           # one per model
 │   ├── DATA/
 │   │   ├── history.data
