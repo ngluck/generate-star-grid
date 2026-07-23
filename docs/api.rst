@@ -9,6 +9,14 @@ grid_utils
    :undoc-members:
    :show-inheritance:
 
+stages
+------
+
+.. automodule:: generate_star_grid.stages
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 grid_utils_cont
 ---------------
 

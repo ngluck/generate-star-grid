@@ -3,11 +3,13 @@ from pathlib import Path
 
 from .grid_utils import load_history_with_constants_from_profile, cleanup_grid_data
 from .failure_report import DEFAULT_REPORT_NAME, write_failure_report
+from .stages import resolve_stages
 
 
 def main(parent_dir: Path, save_as_hdf5: bool, hdf5_filename: str, constant_columns: list,
          cleanup: str = "none", exclude_dirs: list = None,
-         failure_report: bool = True, report_name: str = DEFAULT_REPORT_NAME):
+         failure_report: bool = True, report_name: str = DEFAULT_REPORT_NAME,
+         stages: list = None):
     """
     Load MESA history files from a grid run directory and optionally save to HDF5.
 
@@ -26,7 +28,11 @@ def main(parent_dir: Path, save_as_hdf5: bool, hdf5_filename: str, constant_colu
             default -- it is written before any cleanup, while the logs and
             failed run directories are still in place.
         report_name: Filename for that report, written into parent_dir.
+        stages: Ordered save-file stages (see stages.resolve_stages). The last
+            one decides whether a track finished. Resolved from parent_dir when
+            omitted.
     """
+    stages = stages if stages is not None else resolve_stages(parent_dir)
     df = load_history_with_constants_from_profile(
         parent_dir=parent_dir,
         constant_columns=constant_columns,
@@ -38,14 +44,15 @@ def main(parent_dir: Path, save_as_hdf5: bool, hdf5_filename: str, constant_colu
     print(f"Loaded {len(df)} preview rows.")
     print("Preview:\n", df.head())
 
-    # Before cleanup, always: the report is built from LOGS/ and grid_TAMS/,
-    # which cleanup (here and in the submit_grid combine job) removes for every
-    # task that succeeded. Afterwards it cannot be regenerated.
+    # Before cleanup, always: the report is built from LOGS/ and the stage
+    # archive dirs, which cleanup (here and in the submit_grid combine job)
+    # removes for every task that succeeded. Afterwards it cannot be regenerated.
     if failure_report:
-        write_failure_report(parent_dir, keys=constant_columns, report_name=report_name)
+        write_failure_report(parent_dir, keys=constant_columns, report_name=report_name,
+                             stages=stages)
 
     if save_as_hdf5 and not df.empty:
-        cleanup_grid_data(parent_dir, cleanup)
+        cleanup_grid_data(parent_dir, cleanup, stages=stages)
 
 
 if __name__ == "__main__":
@@ -64,9 +71,9 @@ if __name__ == "__main__":
     parser.add_argument("--cleanup", choices=["none", "zip", "delete"], default="none",
                         help="After a successful --save, archive ('zip') or remove "
                              "('delete') each model's DATA/ folder to save disk space. "
-                             "Refuses to run unless every model has a TAMS save file in "
-                             "grid_TAMS/ (i.e. all array jobs have finished). "
-                             "Default: 'none'.")
+                             "Only models that produced their last stage's save file are "
+                             "touched; anything still running or stopped short keeps its "
+                             "DATA/. Default: 'none'.")
     parser.add_argument("--exclude_dirs", nargs="*", default=None,
                         help="Subdirectory names to exclude from the HDF5 "
                              "(e.g. still-failed task directories).")
@@ -76,7 +83,13 @@ if __name__ == "__main__":
                              "produced its save file and the reason for each.")
     parser.add_argument("--report_name", default=DEFAULT_REPORT_NAME,
                         help=f"Filename for the failure report (default: {DEFAULT_REPORT_NAME}).")
+    parser.add_argument("--stages", default=None, metavar="STEM[,STEM...]",
+                        help="Ordered names of the save files a run produces, e.g. "
+                             "--stages ZAMS,TAMS,RGB. The last one decides whether a track "
+                             "finished. Omit to read them from stages.json or the inlists.")
     args = parser.parse_args()
 
-    main(Path(args.parent_dir).expanduser(), args.save, args.hdf5_filename, args.constants,
-         args.cleanup, args.exclude_dirs, args.failure_report, args.report_name)
+    _parent = Path(args.parent_dir).expanduser()
+    main(_parent, args.save, args.hdf5_filename, args.constants,
+         args.cleanup, args.exclude_dirs, args.failure_report, args.report_name,
+         resolve_stages(_parent, explicit=args.stages))

@@ -99,9 +99,11 @@ python -m generate_star_grid.make_grid \
 | `delete` | Removes `DATA/` without archiving |
 | `none` | Default — leaves `DATA/` untouched |
 
-Cleanup only runs after a successful `--save`, and only if every model directory
-has a corresponding save file in `grid_TAMS/`. If some jobs are still running
-or failed, cleanup is skipped with an explanatory message.
+Cleanup only runs after a successful `--save`, and only touches models that
+produced their last stage's save file (`grid_TAMS/TAMS_<dir>.mod` for a
+main-sequence run). Anything still running, or that stopped short, keeps its
+`DATA/` — that output is the only record of why it stopped — and is named in the
+skip summary. This makes cleanup safe to run while array jobs are outstanding.
 
 ## Merging Multi-Batch Grid Histories
 

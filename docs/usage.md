@@ -33,14 +33,15 @@ The template uses standard Fortran namelist syntax; `grid_utils` substitutes val
 | `mixing_length_alpha = ...` | `--alpha_MLT` |
 | any other settable parameter | `--param KEY=SPEC` (repeatable) |
 | `log_directory = ...` | always set to `'DATA'` |
-| `save_model_filename = ...` | always set to `TAMS_<run_dir_name>.mod` |
+| `save_model_filename = ...` | set to `<STEM>_<run_dir_name>.mod`, where `STEM` comes from the name you declared (`TAMS_0.70.mod` → `TAMS`). Declare several to run [multiple stages](advanced_usage.md#multi-stage-runs) |
 
 ## Choosing the Grid Directory
 
 `grid_utils` has **no `--grid_dir` flag**. It always uses the current working
 directory as the grid directory: that is where it looks for `inlist_template`,
 `mk`, `rn`, and `star`, and where it writes `notes.txt`, `LOGS/`, the per-model
-directories, `grid_TAMS/`, `grid_inlists/`, and `grid_profiles/`.
+directories, one `grid_<STEM>/` per save stage (`grid_TAMS/` for a
+main-sequence run), `grid_inlists/`, and `grid_profiles/`.
 
 Inside a SLURM script this is handled by the `cd` line at the top of the job
 script. When running by hand, you point at the directory by launching from it:

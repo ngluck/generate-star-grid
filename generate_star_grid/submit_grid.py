@@ -51,6 +51,7 @@ from .grid_utils import (
     parse_param_value,
     resolve_param_key,
 )
+from .stages import resolve_stages, save_stages
 
 _BUILTIN_ALIASES = {
     "mass": "initial_mass", "m": "initial_mass", "initial_mass": "initial_mass",
@@ -224,6 +225,7 @@ def cmd_start(args):
         "combine_partition": args.combine_partition,
         "combine_mail_type": args.combine_mail_type,
         "retry_once": args.retry,
+        "stages": args.stages,
         "fail_threshold_mb": args.fail_threshold_mb,
         "merge_after": not args.no_merge_after,
         "merge_time": args.merge_time,
@@ -285,8 +287,14 @@ def _write_and_submit_batch(queue_file: Path, config: dict, batch: dict) -> None
     for pattern in ("M_*",):
         for p in dest.glob(pattern):
             shutil.rmtree(p, ignore_errors=True)
-    for p in (dest / "grid_TAMS").glob("*.mod"):
-        p.unlink(missing_ok=True)
+    # This batch's stage list is resolved from the freshly copied template and
+    # pinned into the batch directory, so its array, combine and report jobs all
+    # agree on which save file means "finished".
+    stages = resolve_stages(dest, explicit=config.get("stages"))
+    save_stages(dest, stages)
+    for stage in stages:
+        for p in (dest / stage.save_dir).glob(f"*{stage.suffix}"):
+            p.unlink(missing_ok=True)
     for p in (dest / "grid_inlists").glob("inlist_*"):
         p.unlink(missing_ok=True)
     logs_dir = dest / "LOGS"
@@ -358,6 +366,11 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_TH
 
     retry_data_prep = '    echo "Preserving DATA/ and photos/ for photo restart."'
 
+    # One 'dir|prefix|suffix' line per stage, so the cleanup below can walk every
+    # archive directory this grid writes rather than only grid_TAMS/.
+    stage_specs = "\n".join(f"{s.save_dir}|{s.prefix}|{s.suffix}" for s in stages)
+    stage_stems_csv = ",".join(s.stem for s in stages)
+
     run_combine = dest / "run_combine_cleanup.sh"
     run_combine.write_text(f"""#!/bin/bash
 #SBATCH --job-name=combine_{job_label}
@@ -372,6 +385,7 @@ export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_TH
 
 DEST="{dest}"
 RETRY_DONE="${{RETRY_DONE:-0}}"
+STAGE_SPECS="{stage_specs}"
 
 cd "$DEST" || {{ echo "FATAL: cannot cd to $DEST" >&2; exit 1; }}
 
@@ -380,7 +394,7 @@ module load miniconda
 conda activate {config['conda_env']}
 
 echo "Checking for failed tasks (retry_done=$RETRY_DONE)..."
-FAILED=$("{python}" -m generate_star_grid.submit_grid check-failed --dest "$DEST" --keys {inner_keys_csv})
+FAILED=$("{python}" -m generate_star_grid.submit_grid check-failed --dest "$DEST" --keys {inner_keys_csv} --stages {stage_stems_csv})
 
 if [ -n "$FAILED" ] && [ "$RETRY_DONE" -eq 0 ] && [ "{1 if config['retry_once'] else 0}" -eq 1 ]; then
     echo "Failed tasks detected:"
@@ -436,9 +450,10 @@ else
 fi
 
 # Cleanup runs only after make_grid has written failure_report.txt, which is
-# built from LOGS/ and grid_TAMS/. Everything a still-failed task needs for
-# diagnosis is kept: its run directory, MESA log, SLURM output and archived
-# inlist. Only artifacts of tasks that succeeded are removed.
+# built from LOGS/ and the stage archive dirs. Everything a still-failed task
+# needs for diagnosis is kept: its run directory, MESA log, SLURM output,
+# archived inlist, and every stage model it did reach. Only artifacts of tasks
+# that succeeded are removed.
 echo "Deleting run directories and artifacts..."
 if [ -n "$FAILED" ]; then
     FAILED_FOLDERS=$(echo "$FAILED" | cut -d'|' -f2)
@@ -468,11 +483,24 @@ if [ -n "$FAILED" ]; then
             rm -f "$f"
         fi
     done
-    rm -f "$DEST"/grid_TAMS/TAMS_*.mod
-    echo "Kept run dir, MESA log, SLURM output and archived inlist for each still-failed task."
+    # A task that stopped short keeps the stage models it did reach: they are the
+    # record of how far it got, and nothing else on disk carries that.
+    echo "$STAGE_SPECS" | while IFS='|' read -r sdir spre ssuf; do
+        [ -n "$sdir" ] || continue
+        for f in "$DEST/$sdir/$spre"*"$ssuf"; do
+            [ -e "$f" ] || continue
+            folder=$(basename "$f" "$ssuf")
+            folder=${{folder#$spre}}
+            echo "$FAILED_FOLDERS" | grep -qx "$folder" || rm -f "$f"
+        done
+    done
+    echo "Kept run dir, MESA log, SLURM output, archived inlist and every stage model reached for each still-failed task."
 else
     rm -rf "$DEST"/M_*/
-    rm -f  "$DEST"/grid_TAMS/TAMS_*.mod
+    echo "$STAGE_SPECS" | while IFS='|' read -r sdir spre ssuf; do
+        [ -n "$sdir" ] || continue
+        rm -f "$DEST/$sdir/$spre"*"$ssuf"
+    done
     rm -f  "$DEST"/grid_inlists/inlist_*
     find   "$DEST/LOGS" -type f -delete
     rm -f  "$DEST"/slurm_*.out
@@ -706,6 +734,7 @@ def cmd_expand(args):
         "combine_partition": args.combine_partition,
         "combine_mail_type": args.combine_mail_type,
         "retry_once": args.retry,
+        "stages": args.stages,
         "fail_threshold_mb": args.fail_threshold_mb,
         "merge_after": not args.no_merge_after,
         "merge_time": args.merge_time,
@@ -769,7 +798,8 @@ def cmd_next(args):
 
 def cmd_check_failed(args):
     keys = args.keys.split(",")
-    failed = find_failed_tasks(args.dest, keys, threshold_mb=args.threshold_mb)
+    stages = resolve_stages(args.dest, explicit=getattr(args, "stages", None))
+    failed = find_failed_tasks(args.dest, keys, stages=stages)
     for f in failed:
         param_str = ",".join(f"{k}={v}" for k, v in f["params"].items())
         print(f"{f['task_id']}|{f['folder']}|{param_str}")
@@ -811,6 +841,8 @@ if __name__ == "__main__":
     p_start.add_argument("--combine_mem", default="16G")
     p_start.add_argument("--combine_partition", default="day")
     p_start.add_argument("--combine_mail_type", default="ALL")
+    p_start.add_argument("--stages", default=None, metavar="STEM[,STEM...]",
+                         help="Ordered names of the save files a run produces, e.g. --stages ZAMS,TAMS,RGB. The last one decides whether a track finished; each is archived to grid_<STEM>/<STEM>_<run_dir>.mod. Omit to read them from the source dir's inlists.")
     p_start.add_argument("--retry", action="store_true",
                          help="Retry each failed task once before finalizing the batch. Off by default: re-running a track with the same settings usually reproduces the same failure, and the failure report already collects every failure with its reason. Worth enabling when failures are expected to be timeouts, which resume from their MESA photos and can make real progress.")
     p_start.add_argument("--no_retry", action="store_true",
@@ -863,6 +895,8 @@ if __name__ == "__main__":
     p_expand.add_argument("--combine_mem", default="16G")
     p_expand.add_argument("--combine_partition", default="day")
     p_expand.add_argument("--combine_mail_type", default="ALL")
+    p_expand.add_argument("--stages", default=None, metavar="STEM[,STEM...]",
+                         help="Ordered names of the save files a run produces, e.g. --stages ZAMS,TAMS,RGB. The last one decides whether a track finished; each is archived to grid_<STEM>/<STEM>_<run_dir>.mod. Omit to read them from the source dir's inlists.")
     p_expand.add_argument("--retry", action="store_true",
                           help="Retry each failed task once before finalizing the batch. Off by default: re-running a track with the same settings usually reproduces the same failure, and the failure report already collects every failure with its reason. Worth enabling when failures are expected to be timeouts, which resume from their MESA photos and can make real progress.")
     p_expand.add_argument("--no_retry", action="store_true",
@@ -884,6 +918,8 @@ if __name__ == "__main__":
     p_check = sub.add_parser("check-failed", help="Print failed array tasks for a batch directory.")
     p_check.add_argument("--dest", required=True)
     p_check.add_argument("--keys", required=True, help="Comma-separated parameter labels to report, e.g. M,Y,Z,alpha")
+    p_check.add_argument("--stages", default=None, metavar="STEM[,STEM...]",
+                         help="Ordered save-file names; the last decides completion. Omit to read them from the batch dir's stages.json or inlists.")
     p_check.add_argument("--threshold_mb", type=float, default=5.0,
                          help="Deprecated and ignored: a task now counts as failed if and only if it never produced its save file. Accepted so existing queue files keep working.")
     p_check.set_defaults(func=cmd_check_failed)

@@ -39,7 +39,9 @@ my_grid_run/
 │   ├── inlist_project                         # this model's substituted inlist
 │   ├── photos/                                # MESA checkpoints (used by photo restart)
 │   └── rn, re, inlist, ...                    # copies of the grid's MESA files
+├── stages.json                                # the ordered save files a run produces
 ├── grid_TAMS/                                 # saved model at TAMS, one per model
+│                                              #   (one grid_<STEM>/ per stage; see Advanced Usage)
 ├── grid_inlists/                              # archived inlist, one per model
 ├── grid_profiles/                             # copied profile files, one subdir per model
 └── LOGS/                                      # one log per array task
@@ -55,7 +57,7 @@ Items highlighted above are added by the pipeline after all array tasks complete
 
 Each model directory gets its own copy of the `star` binary (~54 MB) because
 MESA runs from inside that directory. Once a model finishes successfully — MESA
-exits 0 *and* its `grid_TAMS/` save file was written — that copy is deleted, so
+exits 0 *and* its last stage's save file was written — that copy is deleted, so
 a finished grid does not carry one binary per track. The top-level `star` is
 never touched, and the copy is remade from it on every run, including photo
 restarts.
@@ -91,7 +93,9 @@ lines are:
     initial_y = 0.2700         ! swept via --initial_Y
     mixing_length_alpha = 2.0  ! swept via --alpha_MLT
     log_directory = 'DATA'     ! always overridden to 'DATA'
-    save_model_filename = 'TAMS_0.70.mod'  ! always overridden per run
+    save_model_filename = 'TAMS_0.70.mod'  ! overridden per run: TAMS_<run_dir>.mod
+                                           ! (declare more of these for a
+                                           !  multi-stage run — see Advanced Usage)
 ```
 
 Any other parameter you want to sweep via `--param KEY=SPEC` must also be

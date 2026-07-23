@@ -182,7 +182,7 @@ written to the batch's `combine_<jobid>.out` stdout file.
 
 ## Preserved Evidence for Persistent Failures
 
-Cleanup after each batch reclaims a lot of disk: run directories, TAMS save
+Cleanup after each batch reclaims a lot of disk: run directories, stage save
 files, archived inlists, MESA logs and SLURM output are all removed once the
 batch's `combined_history.hdf5` exists. **Everything belonging to a still-failed
 task is kept**, since that is exactly what you need to diagnose it:
@@ -193,6 +193,7 @@ task is kept**, since that is exactly what you need to diagnose it:
 | `LOGS/log_<dir>_TASK_<id>.txt` | MESA's own output — where it stopped and why |
 | `slurm_<jobid>_<id>.out` | The SLURM-level cause (time limit, OOM) |
 | `grid_inlists/inlist_<dir>` | The exact parameter values that were run |
+| `grid_<STEM>/<STEM>_<dir>.mod` | Every [stage](#multi-stage-runs) it *did* reach, if any |
 
 A failed task is also **excluded from `combined_history.hdf5`** — the combine job
 passes the still-failed folder names to `make_grid --exclude_dirs`, so the
@@ -202,8 +203,8 @@ conditions.
 
 ````{important}
 The order matters and is load-bearing: `make_grid` writes
-`failure_report.txt` **before** any cleanup, while `LOGS/` and `grid_TAMS/` are
-still intact — those are what the report is built from. Once a batch has been
+`failure_report.txt` **before** any cleanup, while `LOGS/` and the stage archive
+directories are still intact — those are what the report is built from. Once a batch has been
 cleaned, the report cannot be regenerated for the tasks that succeeded, so it is
 the durable record of what the batch's completion looked like. Do not move the
 cleanup ahead of the combine step.
@@ -539,7 +540,146 @@ the intermediates.
 | Failure report | Written by each batch's combine job | Written by `finalize` |
 | Parallel queues | Yes (`--parallel N`) | No — one chunk at a time by design |
 
+## Multi-Stage Runs
+
+A grid does not have to stop at the main sequence. A run may continue past TAMS
+and save a model at several points along the way, or stop somewhere else
+entirely and save one model that has nothing to do with TAMS. Both work without
+configuration: the pipeline reads the inlists, works out the ordered list of save
+files a run will produce, and treats **the last one as the completion marker**.
+
+Each save file becomes a *stage*, named by its stem:
+
+| Declared in the inlist | Stage | Archived to |
+|---|---|---|
+| `save_model_filename = 'TAMS_0.70.mod'` | `TAMS` | `grid_TAMS/TAMS_<run_dir>.mod` |
+| `save_model_filename = 'RGB_tip.mod'` | `RGB_tip` | `grid_RGB_tip/RGB_tip_<run_dir>.mod` |
+| `save_model_filename = 'final.mod'` | `final` | `grid_final/final_<run_dir>.mod` |
+
+A trailing number is a mass tag, not part of the name, so `TAMS_0.70.mod` and
+`TAMS_1.80.mod` are both the `TAMS` stage. A single-stage grid declaring
+`TAMS_0.70.mod` therefore lands in `grid_TAMS/` exactly as it always has —
+existing grids are unaffected.
+
+### A Run That Stops Short Is a Failure
+
+This is the point of tracking stages. If a run is supposed to produce ZAMS, TAMS
+and RGB, then a track that produced ZAMS and TAMS but no RGB **did not finish**.
+It is reported as failed, excluded from `combined_history.hdf5`, and — critically
+— **nothing it produced is deleted**. Its run directory, `DATA/`, `photos/`, MESA
+log, SLURM output, archived inlists and both stage models it *did* write all
+survive every cleanup path, because they are the only record of where it stopped.
+
+The [failure report](troubleshooting.md#the-failure-report) says how far each
+failed track got:
+
+```text
+PROGRESS BY STAGE
+------------------------------------------------------------------------------
+  Completion marker: grid_RGB/RGB_<run_dir>.mod
+
+    31  reached no stage at all
+   184  reached ZAMS, stopped before RGB
+   402  reached TAMS, stopped before RGB
+```
+
+That split is actionable in a way the failure reason alone is not: 402 tracks
+dying between TAMS and RGB is a post-main-sequence problem, while 31 that reached
+nothing is a setup or environment problem.
+
+### How Stages Are Discovered
+
+Three mechanisms are recognized, so it does not matter which one you reach for:
+
+````{tab-set}
+```{tab-item} Multi-call rn
+The MESA test-suite pattern — `rn` runs MESA once per stage, each with its own
+inlist. The call order is the stage order.
+
+    do_one inlist_pre_ms_header   ZAMS.mod
+    do_one inlist_to_tams_header  TAMS.mod
+    do_one inlist_to_rgb_header   RGB.mod
+
+The hand-rolled equivalent (`cp inlist_a inlist` then `./star`, repeated) is
+recognized too.
+```
+```{tab-item} One inlist, several saves
+A single template with more than one `save_model_filename`. They become stages in
+the order they appear in the file.
+
+    &star_job
+      save_model_filename = 'ZAMS_0.70.mod'
+    /
+    &star_job
+      save_model_filename = 'TAMS_0.70.mod'
+    /
+```
+```{tab-item} Inlist chains
+`extra_star_job_inlist_name` references are followed. Within one MESA
+invocation the deepest file that declares a save wins, matching how MESA
+overrides a base inlist with an extra one — so a base `inlist` and the
+`inlist_template` it pulls in give **one** stage, not two.
+```
+````
+
+Inspect what a grid directory resolves to before running anything:
+
+````bash
+python -m generate_star_grid.stages --parent_dir /path/to/my_grid
+````
+
+```text
+Stages (3):
+  1. ZAMS         grid_ZAMS/ZAMS_<run_dir>.mod   [inlist_pre_ms_header:12]
+  2. TAMS         grid_TAMS/TAMS_<run_dir>.mod   [inlist_to_tams_header:14]
+  3. RGB          grid_RGB/RGB_<run_dir>.mod     [inlist_to_rgb_header:9]  <- completion marker
+```
+
+### Naming Stages Explicitly
+
+Pass `--stages` when discovery cannot see your layout (stage inlists that `rn`
+does not reference) or when you want different names than the save filenames
+imply. It is accepted by `grid_utils`, `make_grid`, `failure_report`,
+`submit_grid start`/`expand`/`check-failed`, and `chunk_grid`
+`submit`/`compress`/`finalize`/`verify`.
+
+````{tab-set}
+```{tab-item} Ordered stage names
+python -m generate_star_grid.grid_utils \
+    --mass 0.7:1.8 --grid_type sobol --num_points 8192 \
+    --stages ZAMS,TAMS,RGB
+```
+```{tab-item} A custom archive directory
+python -m generate_star_grid.chunk_grid submit \
+    --parent_dir /path/to/my_grid --num_points 8192 \
+    --stages TAMS,RGB:grid_giants
+```
+```{tab-item} Check what a finished grid used
+python -m generate_star_grid.failure_report \
+    --parent_dir /path/to/my_grid --stages ZAMS,TAMS,RGB
+```
+````
+
+The number of names must match the number of save declarations found. Two stages
+that resolve to the same name are an error rather than a silent overwrite — MESA
+would write both models to one path.
+
+````{note}
+The resolved stage list is written to `stages.json` in the grid directory when
+the grid is submitted. Every later job reads it from there, so the combine,
+finalize and report jobs still agree on which save file meant "finished" long
+after cleanup has deleted the inlists that discovery reads. An explicit
+`--stages` always wins over it.
+````
+
 ## Continuation Runs (Post-MS Evolution)
+
+````{note}
+`grid_utils_cont` predates multi-stage support and is a separate code path with
+its own `grid_CONT/cont_*.mod` convention. For a new grid, declaring the extra
+saves in the inlists and letting [stages](#multi-stage-runs) pick them up keeps
+everything in one run and one set of tools.
+````
 
 To resume from TAMS save files and continue evolution:
 

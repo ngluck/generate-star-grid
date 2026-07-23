@@ -13,6 +13,19 @@ from concurrent.futures import ProcessPoolExecutor
 from typing import Union, Optional
 import datetime
 
+from .stages import (
+    Stage,
+    completion_stage,
+    is_single_template_stage,
+    legacy_stages,
+    reached_stem,
+    rename_save_declarations,
+    resolve_stages,
+    save_stages,
+    stage_inlist_order,
+    stage_save_path,
+)
+
 
 # Maps Python parameter keys to their MESA inlist name, directory label, and
 # format spec. This is the single place to register a new swept parameter —
@@ -348,6 +361,7 @@ def print_grid_dry_run(
     avg_data_mb: float = 20.0,
     param_registry: Optional[dict] = None,
     sobol_seed: Optional[int] = None,
+    stages: Optional[list] = None,
 ) -> None:
     """
     Print a plan summary for a grid without building or running MESA.
@@ -368,6 +382,8 @@ def print_grid_dry_run(
             (non-built-in) parameters added via --param.
         sobol_seed: Seed for the Sobol scramble, forwarded to generate_grid so
             the previewed filenames match the values that will actually run.
+        stages: Ordered save-file stages (see stages.resolve_stages). Resolved
+            from the current directory when omitted.
     """
     registry = param_registry or PARAM_FORMAT
     fixed = {k: v for k, v in param_specs.items() if k in registry and not isinstance(v, (tuple, list))}
@@ -446,7 +462,8 @@ def print_grid_dry_run(
     for i in sample_idxs:
         print(f"  {make_run_dir_name(param_dicts[i], param_formats, registry)}/")
     first_name = make_run_dir_name(param_dicts[0], param_formats, registry)
-    print(f"  grid_TAMS/TAMS_{first_name}.mod")
+    for stage in (stages or resolve_stages(Path.cwd())):
+        print(f"  {stage.save_dir}/{stage.filename(first_name)}")
     print(f"  grid_inlists/inlist_{first_name}")
     print(f"  grid_profiles/{first_name}/   (profile*.data, profiles.index, etc., if any were saved)")
     print(f"  LOGS/log_{first_name}_TASK_0.txt   (for SLURM array runs)")
@@ -841,6 +858,7 @@ def find_failed_tasks(
     save_dir: str = "grid_TAMS",
     save_prefix: str = "TAMS_",
     save_suffix: str = ".mod",
+    stages: Optional[list] = None,
 ) -> list:
     """
     Find SLURM array tasks that never produced their completion save file.
@@ -851,37 +869,49 @@ def find_failed_tasks(
     ``log_`` prefix, ``.txt`` suffix, and ``_TASK_<id>`` suffix), so it works
     regardless of which parameters were swept or what values they took.
 
-    A task is failed if and only if its save file is absent. That file is what
-    MESA writes on a genuine stop condition (``save_model_when_terminate``), so
-    it is the one signal that distinguishes a finished track from one cut off
-    mid-run. The size of history.data is not consulted: a track killed at the
-    SLURM time limit routinely accumulates a large history.data without ever
-    reaching a stop condition, while a short-lived track can finish correctly
-    with a small one -- in both directions the size says nothing about whether
-    the run completed.
+    A task is failed if and only if its **last** stage's save file is absent.
+    That file is what MESA writes on a genuine stop condition
+    (``save_model_when_terminate``), so it is the one signal that distinguishes a
+    finished track from one cut off mid-run. A run that continues past the main
+    sequence has several stages; producing ZAMS and TAMS but never RGB is a
+    failure, and the stages it did reach are reported in 'reached'.
 
-    The save file's location is parameterized so the same check applies to later
-    evolutionary stages, which save elsewhere (e.g. grid_CONT/ for continuation
-    runs) or under a different prefix.
+    The size of history.data is not consulted: a track killed at the SLURM time
+    limit routinely accumulates a large history.data without ever reaching a stop
+    condition, while a short-lived track can finish correctly with a small one --
+    in both directions the size says nothing about whether the run completed.
 
     Args:
-        dest: Grid run directory containing LOGS/, the save directory, and the
+        dest: Grid run directory containing LOGS/, the save directories, and the
             model subdirectories.
         keys: Parameter labels to extract from each failed model's directory
             name (e.g. ['M', 'Y', 'Z', 'alpha'], or labels for any extra
             --param parameters), via extract_constants_from_subdir_name.
         threshold_mb: Deprecated and ignored; accepted so existing queue files
             and generated SLURM scripts that still pass it keep working.
-        save_dir: Subdirectory of dest holding the completion save files.
-        save_prefix: Save filename prefix before the run directory name.
-        save_suffix: Save filename suffix.
+        save_dir: Single-stage shorthand for the save directory. Only consulted
+            when 'stages' is omitted and it differs from the default.
+        save_prefix: Single-stage shorthand for the filename prefix.
+        save_suffix: Single-stage shorthand for the filename suffix.
+        stages: Ordered save-file stages (see stages.resolve_stages). Resolved
+            from dest when omitted.
 
     Returns:
         List of dicts, one per failed task, each with keys 'task_id' (int),
-        'folder' (str, the model subdirectory name), and 'params' (dict of
-        the requested keys extracted from the folder name).
+        'folder' (str, the model subdirectory name), 'params' (dict of the
+        requested keys extracted from the folder name), and 'reached' (stem of
+        the furthest stage the run did produce, or None).
     """
     dest = Path(dest)
+    if stages is None:
+        if (save_dir, save_prefix, save_suffix) != ("grid_TAMS", "TAMS_", ".mod"):
+            # An explicit save location from a caller wins over discovery.
+            stages = [Stage(stem=save_prefix.rstrip("_") or save_dir, save_dir=save_dir,
+                            prefix=save_prefix, suffix=save_suffix, source="explicit")]
+        else:
+            stages = resolve_stages(dest)
+
+    last = completion_stage(stages)
     failed = []
     for log in sorted(dest.glob("LOGS/log_*_TASK_*.txt")):
         match = re.search(r"_TASK_(\d+)$", log.stem)
@@ -890,29 +920,33 @@ def find_failed_tasks(
         task_id = int(match.group(1))
         folder_name = re.sub(r"^log_", "", log.stem)
         folder_name = re.sub(r"_TASK_\d+$", "", folder_name)
-        save_file = dest / save_dir / f"{save_prefix}{folder_name}{save_suffix}"
 
-        if not save_file.exists():
+        if not stage_save_path(dest, last, folder_name).exists():
             params = extract_constants_from_subdir_name(folder_name, keys)
-            failed.append({"task_id": task_id, "folder": folder_name, "params": params})
+            failed.append({"task_id": task_id, "folder": folder_name, "params": params,
+                           "reached": reached_stem(dest, folder_name, stages)})
 
     return failed
 
 
-def cleanup_grid_data(parent_dir: Union[str, Path], mode: str = "none") -> None:
+def cleanup_grid_data(parent_dir: Union[str, Path], mode: str = "none",
+                      stages: Optional[list] = None) -> None:
     """
     Remove or archive each model's DATA/ folder after combined_history.hdf5 is built.
 
-    Refuses to do anything unless every model directory (one with a DATA/
-    subfolder) has a corresponding TAMS save file in grid_TAMS/ -- this is a
-    safety check against running cleanup while SLURM array jobs are still in
-    progress, or have failed without producing output (see slurm/find_failed.sh).
+    Only models that reached their **last** stage are touched. A run that stopped
+    short keeps its DATA/ intact along with everything else it produced, because
+    that output is the only record of why it stopped -- it is skipped here and
+    listed in the summary. Models still in progress are skipped for the same
+    reason, so this is safe to run while array jobs are outstanding.
 
     Args:
         parent_dir: Grid run directory containing one subdirectory per model.
         mode: 'none' (no-op, default), 'zip' (archive each DATA/ to DATA.zip
             in the same model directory, then remove DATA/), or 'delete'
             (remove DATA/ without archiving).
+        stages: Ordered save-file stages (see stages.resolve_stages). Resolved
+            from parent_dir when omitted.
 
     Raises:
         ValueError: If mode is not one of 'none', 'zip', 'delete'.
@@ -923,17 +957,30 @@ def cleanup_grid_data(parent_dir: Union[str, Path], mode: str = "none") -> None:
         raise ValueError(f"Unsupported cleanup mode '{mode}'. Choose 'none', 'zip', or 'delete'.")
 
     parent_dir = Path(parent_dir)
-    model_dirs = [d for d in parent_dir.iterdir() if d.is_dir() and (d / "DATA").is_dir()]
+    all_dirs = [d for d in parent_dir.iterdir() if d.is_dir() and (d / "DATA").is_dir()]
 
-    tams_dir = parent_dir / "grid_TAMS"
-    n_tams = len(list(tams_dir.glob("TAMS_*.mod"))) if tams_dir.is_dir() else 0
+    if stages is None:
+        stages = resolve_stages(parent_dir)
+    last = completion_stage(stages)
 
-    if n_tams < len(model_dirs):
-        print(
-            f"Skipping cleanup: only {n_tams}/{len(model_dirs)} model directories have a "
-            f"TAMS save file in grid_TAMS/. Some array jobs may still be running, or may "
-            f"have failed (see slurm/find_failed.sh). Re-run with --cleanup once all jobs finish."
-        )
+    model_dirs, skipped = [], []
+    for d in all_dirs:
+        if stage_save_path(parent_dir, last, d.name).exists():
+            model_dirs.append(d)
+        else:
+            skipped.append(d)
+
+    if skipped:
+        print(f"Keeping DATA/ for {len(skipped)}/{len(all_dirs)} model(s) with no "
+              f"{last.save_dir}/{last.prefix}*{last.suffix} save file (still running, or "
+              f"stopped short):")
+        for d in sorted(skipped)[:20]:
+            print(f"  {d.name}")
+        if len(skipped) > 20:
+            print(f"  ... and {len(skipped) - 20} more")
+
+    if not model_dirs:
+        print("Nothing to clean up.")
         return
 
     for subdir in sorted(model_dirs):
@@ -1023,15 +1070,17 @@ def generate_grid(param_specs: dict, grid_type: str = "linear", num_points: int 
 
 
 def update_inlist(
-    template_text: str, params: dict, log_dir: str, param_registry: Optional[dict] = None
+    template_text: str, params: dict, log_dir: str, param_registry: Optional[dict] = None,
+    stages: Optional[list] = None, stage_offset: int = 0
 ) -> str:
     """
     Substitute parameter values into a MESA inlist template.
 
     Handles every key in params that's also in param_registry (PARAM_FORMAT's
     four built-in parameters by default, plus any extra parameters added via
-    --param). Also sets log_directory to 'DATA' and save_model_filename to
-    TAMS_<log_dir>.mod, matching the run directory name.
+    --param). Also sets log_directory to 'DATA', and points each
+    save_model_filename at its stage's per-model file (TAMS_<log_dir>.mod for a
+    single main-sequence stage), matching the run directory name.
 
     Each value is written with at least as many decimals as param_registry's
     default fmt, and more if needed to represent the value exactly (see
@@ -1049,11 +1098,16 @@ def update_inlist(
         param_registry: Dict like PARAM_FORMAT (label/fmt/inlist_key per key).
             Defaults to PARAM_FORMAT; pass an extended copy to substitute extra
             (non-built-in) parameters too.
+        stages: Ordered save-file stages (see stages.resolve_stages). Defaults
+            to the single TAMS stage, i.e. the historical behaviour.
+        stage_offset: How many stages earlier inlists in this run already
+            consumed, so a multi-file run numbers its saves continuously.
 
     Returns:
         Modified inlist text.
     """
     registry = param_registry or PARAM_FORMAT
+    stages = stages if stages is not None else legacy_stages()
     for key, val in params.items():
         if key not in registry:
             continue
@@ -1072,12 +1126,7 @@ def update_inlist(
 
     template_text = re.sub(r"log_directory\s*=\s*'.*?'", "log_directory = 'DATA'", template_text)
 
-    save_fname = f"TAMS_{log_dir}.mod"
-    template_text = re.sub(
-        r"save_model_filename\s*=\s*['\"].*?\.mod['\"]",
-        f"save_model_filename = '{save_fname}'",
-        template_text,
-    )
+    template_text, _ = rename_save_declarations(template_text, log_dir, stages, stage_offset)
     return template_text
 
 
@@ -1128,13 +1177,19 @@ def collect_profile_files(run_dir: Path, mesa_dir: Path, log_dir_name: str) -> N
 
 def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: Path,
                     param_formats: Optional[dict] = None, param_registry: Optional[dict] = None,
-                    restart_photos: bool = False, cleanup_star: bool = True) -> None:
+                    restart_photos: bool = False, cleanup_star: bool = True,
+                    stages: Optional[list] = None) -> None:
     """
     Set up a run directory for a single MESA model and execute it.
 
     Creates a subdirectory named by the parameter values under mesa_dir, writes
-    the updated inlist, copies MESA runtime files, runs MESA, then archives the
-    output TAMS model, inlist, and any saved profiles (see collect_profile_files).
+    the updated inlist, copies MESA runtime files, runs MESA, then archives every
+    stage's save model, the inlists, and any saved profiles (see
+    collect_profile_files).
+
+    A run that stops short leaves everything behind: the earlier stages it did
+    reach stay in their grid_<stem>/ directories, and its star binary is not
+    reclaimed, so it can be inspected or re-run by hand.
 
     Args:
         template_file: Path to the inlist_template file.
@@ -1156,19 +1211,37 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
             unavailable. The log file is opened in append mode when restarting.
         cleanup_star: If True (the default), delete the run directory's copy of
             the star binary once the model completed successfully (MESA exited 0 and
-            produced its TAMS save file). The copy is ~54 MB per model and is
+            produced its last stage's save file). The copy is ~54 MB per model and is
             re-copied from mesa_dir on every run, including photo restarts, so
             removing it costs nothing and keeps a large grid's footprint down.
             Left in place after a failure, so a failed run can be inspected or
             re-run by hand.
+        stages: Ordered save-file stages (see stages.resolve_stages). Resolved
+            from mesa_dir when omitted.
     """
     log_dir_name = make_run_dir_name(params, param_formats, param_registry)
     run_dir = mesa_dir / log_dir_name
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "DATA").mkdir(exist_ok=True)
 
+    if stages is None:
+        stages = resolve_stages(mesa_dir, template_file=template_file)
+
     with open(template_file, "r") as f:
-        updated_text = update_inlist(f.read(), params, log_dir_name, param_registry)
+        template_text = f.read()
+
+    # Each inlist's save declarations are numbered in stage order, so a run
+    # spread over several inlists numbers its saves continuously. A single-stage
+    # template resolves to offset 0, i.e. the historical numbering.
+    inlist_order = stage_inlist_order(stages)
+    template_name = Path(template_file).name
+    offsets, running = {}, 0
+    for name in inlist_order:
+        offsets[name] = running
+        running += sum(1 for s in stages if s.inlist == name)
+
+    updated_text = update_inlist(template_text, params, log_dir_name, param_registry,
+                                 stages, offsets.get(template_name, 0))
 
     inlist_path = run_dir / "inlist_project"
     with open(inlist_path, "w") as f:
@@ -1180,6 +1253,22 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
             shutil.copy(src, run_dir / fname)
         elif fname in ("rn", "star"):
             raise FileNotFoundError(f"Required MESA file '{fname}' not found in {mesa_dir}")
+
+    # A multi-stage run reads inlists beyond the template, so they all have to be
+    # present in the run directory with their own save names substituted in. A
+    # single-stage run needs none of this and writes exactly the files it always
+    # has.
+    extra_inlists = []
+    if not is_single_template_stage(stages, template_name):
+        for name in inlist_order:
+            src = mesa_dir / name
+            if name == template_name or not src.is_file():
+                continue
+            (run_dir / name).write_text(
+                update_inlist(src.read_text(), params, log_dir_name, param_registry,
+                              stages, offsets[name])
+            )
+            extra_inlists.append(name)
 
     photo = find_latest_photo(run_dir) if restart_photos else None
     if restart_photos and photo is None:
@@ -1205,21 +1294,28 @@ def run_mesa_model(template_file: Path, mesa_dir: Path, params: dict, log_path: 
         except Exception as e:
             print(f"Unexpected error running MESA in {run_dir}: {e}")
 
-    save_fname = f"TAMS_{log_dir_name}.mod"
-    src = run_dir / save_fname
-    grid_tams = mesa_dir / "grid_TAMS"
-    grid_tams.mkdir(exist_ok=True)
-    tams_saved = src.exists()
-    if tams_saved:
-        shutil.move(str(src), str(grid_tams / save_fname))
+    # Archive every stage that was reached, not only the last: for a run that
+    # stopped short, the earlier saves are the record of how far it got.
+    for stage in stages:
+        save_fname = stage.filename(log_dir_name)
+        src = run_dir / save_fname
+        stage_dir = mesa_dir / stage.save_dir
+        stage_dir.mkdir(exist_ok=True)
+        if src.exists():
+            shutil.move(str(src), str(stage_dir / save_fname))
+
+    # The last stage is the completion marker; anything short of it is a failure.
+    completed = stage_save_path(mesa_dir, completion_stage(stages), log_dir_name).exists()
 
     inlist_out_dir = mesa_dir / "grid_inlists"
     inlist_out_dir.mkdir(exist_ok=True)
     shutil.copy(inlist_path, inlist_out_dir / f"inlist_{log_dir_name}")
+    for name in extra_inlists:
+        shutil.copy(run_dir / name, inlist_out_dir / f"{name}_{log_dir_name}")
 
     collect_profile_files(run_dir, mesa_dir, log_dir_name)
 
-    if cleanup_star and mesa_ok and tams_saved:
+    if cleanup_star and mesa_ok and completed:
         (run_dir / "star").unlink(missing_ok=True)
 
 
@@ -1229,15 +1325,15 @@ def task_wrapper(args: tuple) -> None:
 
     Args:
         args: Tuple of (params, template_file, mesa_dir, param_formats, param_registry,
-            restart_photos, cleanup_star).
+            restart_photos, cleanup_star, stages).
     """
     (params, template_file, mesa_dir, param_formats, param_registry,
-     restart_photos, cleanup_star) = args
+     restart_photos, cleanup_star, stages) = args
     log_dir_name = make_run_dir_name(params, param_formats, param_registry)
     logs_dir = mesa_dir / "LOGS"
     logs_dir.mkdir(exist_ok=True)
     run_mesa_model(template_file, mesa_dir, params, logs_dir / f"log_{log_dir_name}.txt",
-                    param_formats, param_registry, restart_photos, cleanup_star)
+                    param_formats, param_registry, restart_photos, cleanup_star, stages)
 
 
 def run_grid(
@@ -1249,6 +1345,7 @@ def run_grid(
     restart_photos: bool = False,
     sobol_seed: Optional[int] = None,
     cleanup_star: bool = True,
+    stages: Optional[list] = None,
 ) -> None:
     """
     Build MESA, generate the parameter grid, and run all models in parallel.
@@ -1269,6 +1366,8 @@ def run_grid(
         sobol_seed: Sobol scramble seed forwarded to generate_grid (see there).
         cleanup_star: Delete each model's star copy once it completes
             successfully (see run_mesa_model).
+        stages: Ordered save-file stages (see stages.resolve_stages). Resolved
+            from the grid directory when omitted.
     """
     this_grid_dir = Path.cwd()
     print("Building MESA...", flush=True)
@@ -1276,6 +1375,10 @@ def run_grid(
     print(f"Grid directory: {this_grid_dir}")
 
     (this_grid_dir / "LOGS").mkdir(exist_ok=True)
+
+    if stages is None:
+        stages = resolve_stages(this_grid_dir, quiet=False)
+    save_stages(this_grid_dir, stages)
 
     param_dicts = generate_grid(param_ranges, grid_type=grid_type, num_points=num_points,
                                 sobol_seed=sobol_seed)
@@ -1288,7 +1391,7 @@ def run_grid(
 
     args_list = [
         (p, this_grid_dir / "inlist_template", this_grid_dir, param_formats, param_registry,
-         restart_photos, cleanup_star)
+         restart_photos, cleanup_star, stages)
         for p in param_dicts
     ]
 
@@ -1351,6 +1454,12 @@ if __name__ == "__main__":
     star_group.add_argument("--no_cleanup_star", dest="cleanup_star", action="store_false",
                             help="Keep each model's star copy after a successful run. Costs "
                                  "~54 MB per model; use only when debugging a finished run dir.")
+    parser.add_argument("--stages", default=None, metavar="STEM[,STEM...]",
+                        help="Ordered names of the save files a run produces, e.g. "
+                             "--stages ZAMS,TAMS,RGB. The last one marks a track as "
+                             "finished; each is archived to grid_<STEM>/<STEM>_<run_dir>.mod "
+                             "(append ':<dir>' to a name for a different directory). "
+                             "Omit to read them from the inlists.")
     parser.add_argument("--task_id", type=int, default=None,
                         help="SLURM array task index: runs only this one parameter set.")
     args = parser.parse_args()
@@ -1377,10 +1486,12 @@ if __name__ == "__main__":
         param_ranges.update(extra_specs)
         param_registry.update(extra_registry)
 
+    grid_stages = resolve_stages(Path.cwd(), explicit=args.stages, quiet=False)
+
     if args.dry_run:
         print_grid_dry_run(param_ranges, grid_type=args.grid_type, num_points=args.num_points,
                             avg_data_mb=args.avg_data_mb, param_registry=param_registry,
-                            sobol_seed=args.sobol_seed)
+                            sobol_seed=args.sobol_seed, stages=grid_stages)
         sys.exit(0)
 
     param_dicts = generate_grid(param_ranges, grid_type=args.grid_type, num_points=args.num_points,
@@ -1404,6 +1515,10 @@ if __name__ == "__main__":
             write_grid_notes(param_ranges, param_formats, args.grid_type, args.num_points,
                               this_grid_dir / "notes.txt", param_registry=param_registry,
                               sobol_seed=args.sobol_seed)
+            # One task writes stages.json for the whole grid; it outlives the
+            # inlists, which cleanup removes, so the combine and report jobs can
+            # still tell which save file marked completion.
+            save_stages(this_grid_dir, grid_stages)
 
         log_dir_name = make_run_dir_name(params, param_formats, param_registry) + f"_TASK_{idx}"
         run_mesa_model(
@@ -1415,6 +1530,7 @@ if __name__ == "__main__":
             param_registry,
             args.restart_photos,
             args.cleanup_star,
+            grid_stages,
         )
 
     else:
@@ -1427,6 +1543,7 @@ if __name__ == "__main__":
             restart_photos=args.restart_photos,
             sobol_seed=args.sobol_seed,
             cleanup_star=args.cleanup_star,
+            stages=grid_stages,
         )
 
     print(f"Done at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.")

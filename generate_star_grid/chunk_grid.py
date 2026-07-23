@@ -23,10 +23,12 @@ Chunking is safe for Sobol grids because every task rebuilds the identical cloud
 from --sobol_seed and selects its own index, so task id -> parameters is fixed no
 matter how the range is split.
 
-Unlike cleanup_grid_data's all-or-nothing check, the guard here is per model
-directory: a directory is compressible if and only if its own TAMS save file
-exists in grid_TAMS/. A partially failed grid therefore still compresses its
-completed models, rather than refusing to free anything.
+The guard is per model directory: a directory is compressible if and only if it
+produced its own last-stage save file (grid_TAMS/TAMS_<dir>.mod for a run that
+stops at the main sequence -- see stages.py for runs that go further). A
+partially failed grid therefore still compresses its completed models rather
+than refusing to free anything, and a model that stopped short is never moved or
+deleted, so everything it produced stays put for inspection.
 """
 import argparse
 import json
@@ -50,12 +52,33 @@ from .grid_utils import (
 )
 from .failure_report import DEFAULT_REPORT_NAME, write_failure_report
 from .merge_grids import merge_batch_hdf5, _hdf5_nrows
+from .stages import (
+    Stage,
+    completion_stage,
+    resolve_stages,
+    save_stages,
+    stage_save_path,
+)
 
 CHUNK_DIR_GLOB = "chunk_*"
 COMBINED_NAME = "combined_history.hdf5"
 
 # Directories in a grid dir that are outputs/bookkeeping, never model run dirs.
+# Any grid_<stage>/ archive directory is added to this at runtime.
 NON_MODEL_DIRS = {"grid_TAMS", "grid_profiles", "grid_inlists", "LOGS", "slurm_logs", "DATA"}
+
+
+def non_model_dirs(stages: Optional[list] = None) -> set:
+    """
+    Directory names in a grid dir that are never model run directories.
+
+    A multi-stage grid archives into one grid_<stem>/ per stage, so the fixed
+    set is widened by whatever stages this grid actually has.
+    """
+    names = set(NON_MODEL_DIRS)
+    for stage in stages or []:
+        names.add(stage.save_dir)
+    return names
 
 
 def free_gb(path: Path) -> float:
@@ -137,36 +160,53 @@ def model_dirs_for_tasks(
     return dirs
 
 
-def has_tams(parent_dir: Path, model_dir: Path) -> bool:
+def is_complete_dir(parent_dir: Path, model_dir: Path, stages: Optional[list] = None) -> bool:
     """
-    Return True if model_dir's TAMS save file is present in grid_TAMS/.
+    Return True if model_dir produced its last stage's save file.
 
     This is the per-directory completion signal used across the codebase (see
     cleanup_grid_data and submit_grid check-failed): run_mesa_model moves
-    TAMS_<dirname>.mod into grid_TAMS/ only after MESA produced it.
-    """
-    return (Path(parent_dir) / "grid_TAMS" / f"TAMS_{Path(model_dir).name}.mod").exists()
-
-
-def partition_by_completion(parent_dir: Path, model_dirs: list) -> tuple:
-    """
-    Split model dirs into (completed, incomplete, missing) by the per-dir TAMS guard.
+    <stem>_<dirname>.mod into grid_<stem>/ only after MESA produced it, and the
+    last stage is the one that means the track finished.
 
     Args:
-        parent_dir: Grid run directory (must contain grid_TAMS/).
+        parent_dir: Grid run directory.
+        model_dir: The model's run directory.
+        stages: Ordered save-file stages. Resolved from parent_dir when omitted.
+    """
+    parent_dir = Path(parent_dir)
+    stages = stages if stages is not None else resolve_stages(parent_dir)
+    return stage_save_path(parent_dir, completion_stage(stages), Path(model_dir).name).exists()
+
+
+def has_tams(parent_dir: Path, model_dir: Path) -> bool:
+    """Deprecated alias for is_complete_dir; kept for callers that predate stages."""
+    return is_complete_dir(parent_dir, model_dir)
+
+
+def partition_by_completion(parent_dir: Path, model_dirs: list,
+                            stages: Optional[list] = None) -> tuple:
+    """
+    Split model dirs into (completed, incomplete, missing) by the last-stage guard.
+
+    Args:
+        parent_dir: Grid run directory (must contain the stage archive dirs).
         model_dirs: Candidate model directories.
+        stages: Ordered save-file stages. Resolved from parent_dir when omitted.
 
     Returns:
-        (completed, incomplete, missing) lists of paths. 'completed' have a TAMS
-        file, 'incomplete' exist on disk without one (still running, or failed),
-        'missing' are not on disk at all (never started).
+        (completed, incomplete, missing) lists of paths. 'completed' produced
+        their last stage's save file, 'incomplete' exist on disk without one
+        (still running, or stopped short), 'missing' are not on disk at all.
     """
+    parent_dir = Path(parent_dir)
+    stages = stages if stages is not None else resolve_stages(parent_dir)
     completed, incomplete, missing = [], [], []
     for d in model_dirs:
         d = Path(d)
         if not d.is_dir():
             missing.append(d)
-        elif has_tams(parent_dir, d):
+        elif is_complete_dir(parent_dir, d, stages):
             completed.append(d)
         else:
             incomplete.append(d)
@@ -179,6 +219,7 @@ def compress_chunk(
     model_dirs: list,
     constant_columns: Optional[list] = None,
     delete_run_dirs: bool = True,
+    stages: Optional[list] = None,
 ) -> Optional[Path]:
     """
     Fold a chunk's completed model directories down to one combined_history.hdf5.
@@ -188,9 +229,10 @@ def compress_chunk(
     is non-empty, and only then deletes the moved run directories. Incomplete
     models are left untouched in parent_dir so they can be retried.
 
-    The run directories are redundant once the HDF5 exists: TAMS models are
-    already in grid_TAMS/, profiles in grid_profiles/, inlists in grid_inlists/,
-    and MESA stdout in LOGS/.
+    The run directories are redundant once the HDF5 exists: the stage models are
+    already in their grid_<stem>/ directories, profiles in grid_profiles/,
+    inlists in grid_inlists/, and MESA stdout in LOGS/. Models that stopped short
+    are never moved or deleted, so everything they produced stays for inspection.
 
     Args:
         parent_dir: Grid run directory.
@@ -200,6 +242,7 @@ def compress_chunk(
             Defaults to ['M', 'Y', 'Z', 'alpha'].
         delete_run_dirs: Delete the moved run dirs after a verified write.
             Set False to keep them (combines without reclaiming space).
+        stages: Ordered save-file stages. Resolved from parent_dir when omitted.
 
     Returns:
         Path to the chunk's combined_history.hdf5, or None if the chunk had no
@@ -209,7 +252,7 @@ def compress_chunk(
     chunk_dir = Path(chunk_dir)
     constants = constant_columns if constant_columns is not None else ["M", "Y", "Z", "alpha"]
 
-    completed, incomplete, missing = partition_by_completion(parent_dir, model_dirs)
+    completed, incomplete, missing = partition_by_completion(parent_dir, model_dirs, stages)
     print(f"{chunk_dir.name}: {len(completed)} completed, {len(incomplete)} incomplete, "
           f"{len(missing)} never started.")
 
@@ -265,6 +308,7 @@ def verify_chunk_coverage(
     save_dir: str = "grid_TAMS",
     save_prefix: str = "TAMS_",
     save_suffix: str = ".mod",
+    stages: Optional[list] = None,
 ) -> list:
     """
     Check that every completed model in each chunk reached that chunk's HDF5.
@@ -282,7 +326,10 @@ def verify_chunk_coverage(
         parent_dir: Grid run directory.
         bounds: Inclusive (start, end) task-id pairs, as from chunk_bounds.
         hdf5_key: HDF5 store key the chunks were written with.
-        save_dir, save_prefix, save_suffix: Completion save file location.
+        save_dir, save_prefix, save_suffix: Single-stage shorthand for the
+            completion save file location. Only consulted when 'stages' is
+            omitted and they differ from the defaults.
+        stages: Ordered save-file stages. Resolved from parent_dir when omitted.
 
     Returns:
         One dict per chunk with 'name', 'start', 'end', 'completed', 'tracks',
@@ -290,6 +337,13 @@ def verify_chunk_coverage(
         completed models still in parent_dir), and 'ok'.
     """
     parent_dir = Path(parent_dir)
+    if stages is None:
+        if (save_dir, save_prefix, save_suffix) != ("grid_TAMS", "TAMS_", ".mod"):
+            stages = [Stage(stem=save_prefix.rstrip("_") or save_dir, save_dir=save_dir,
+                            prefix=save_prefix, suffix=save_suffix, source="explicit")]
+        else:
+            stages = resolve_stages(parent_dir)
+    last = completion_stage(stages)
 
     # task id -> run directory name, taken from the logs rather than rebuilt, so
     # the check does not depend on reproducing the cloud.
@@ -308,7 +362,7 @@ def verify_chunk_coverage(
             folder = by_task.get(task_id)
             if folder is None:
                 continue
-            if not (parent_dir / save_dir / f"{save_prefix}{folder}{save_suffix}").exists():
+            if not stage_save_path(parent_dir, last, folder).exists():
                 continue
             completed += 1
             if (parent_dir / folder).is_dir():
@@ -451,6 +505,10 @@ def _grid_flags(config: dict) -> list:
         flags += ["--param", item]
     flags += ["--grid_type", config["grid_type"], "--num_points", str(config["num_points"]),
               "--sobol_seed", str(config["sobol_seed"])]
+    # Named explicitly rather than rediscovered per task, so every task in the
+    # array agrees on the stage list even if the inlists change under it.
+    if config.get("stages"):
+        flags += ["--stages", ",".join(config["stages"])]
     return flags
 
 
@@ -475,7 +533,8 @@ def cmd_compress(args) -> None:
         sobol_seed=args.sobol_seed, param_registry=registry,
     )
     compress_chunk(parent, chunk_dir_for(parent, start, end), model_dirs,
-                   constant_columns=args.constants, delete_run_dirs=not args.no_delete)
+                   constant_columns=args.constants, delete_run_dirs=not args.no_delete,
+                   stages=resolve_stages(parent, explicit=getattr(args, "stages", None)))
 
 
 def cmd_merge(args) -> None:
@@ -488,11 +547,13 @@ def cmd_merge(args) -> None:
 def cmd_finalize(args) -> None:
     parent = Path(_resolve_parent_dir(args.parent_dir)).resolve()
     chunk_dirs = find_chunk_dirs(parent)
+    stages = resolve_stages(parent, explicit=getattr(args, "stages", None))
 
     # Written before the merge can fail: the logs and the failed run directories
     # are the only record of why a track is missing, and they outlive the chunks.
     if args.failure_report:
-        write_failure_report(parent, keys=args.constants, report_name=args.report_name)
+        write_failure_report(parent, keys=args.constants, report_name=args.report_name,
+                             stages=stages)
 
     master = merge_master(parent, hdf5_key=args.hdf5_key)
     if master is None:
@@ -524,6 +585,9 @@ def _write_chunk_scripts(parent: Path, config: dict, queue_file: Path) -> None:
     python = config["python"]
     conda_env = config["conda_env"]
     grid_flags = " \\\n    ".join(shlex.quote(t) for t in _grid_flags(config))
+    stages_flag = ""
+    if config.get("stages"):
+        stages_flag = " \\\n    --stages " + shlex.quote(",".join(config["stages"]))
 
     (parent / "run_chunk_array.sh").write_text(f"""#!/bin/bash
 #SBATCH --job-name=mesa_chunk
@@ -586,7 +650,7 @@ conda activate {conda_env}
 
 "{python}" -m generate_star_grid.chunk_grid finalize \\
     --parent_dir "{parent}" \\
-    --constants {' '.join(shlex.quote(c) for c in config['constants'])}
+    --constants {' '.join(shlex.quote(c) for c in config['constants'])}{stages_flag}
 """)
     (parent / "run_finalize.sh").chmod(0o755)
 
@@ -631,7 +695,9 @@ def cmd_verify(args) -> None:
         config = json.loads(queue_file.read_text())["config"]
         bounds = [tuple(b) for b in config["bounds"]]
 
-    results = verify_chunk_coverage(parent, bounds, hdf5_key=args.hdf5_key)
+    results = verify_chunk_coverage(
+        parent, bounds, hdf5_key=args.hdf5_key,
+        stages=resolve_stages(parent, explicit=getattr(args, "stages", None)))
     print(f"{'chunk':<24}{'range':>13}{'completed':>11}{'in HDF5':>9}   status")
     stranded, pending = [], []
     for r in results:
@@ -686,6 +752,15 @@ def cmd_submit(args) -> None:
         return
 
     (parent / "slurm_logs").mkdir(exist_ok=True)
+
+    # Resolved once, here, and persisted: every later job (compress, finalize,
+    # the failure report) then agrees on which save file means "finished", even
+    # after cleanup has removed the inlists discovery reads.
+    stages = resolve_stages(parent, explicit=args.stages, quiet=False)
+    save_stages(parent, stages)
+    print(f"Completion marker: {stages[-1].save_dir}/{stages[-1].prefix}<run_dir>"
+          f"{stages[-1].suffix}" + (f" (last of {len(stages)} stages)" if len(stages) > 1 else ""))
+
     config = {
         "parent_dir": str(parent),
         "python": args.python, "conda_env": args.conda_env,
@@ -694,6 +769,7 @@ def cmd_submit(args) -> None:
         "grid_type": args.grid_type, "num_points": args.num_points,
         "sobol_seed": args.sobol_seed, "chunk_size": args.chunk_size,
         "constants": args.constants,
+        "stages": [s.stem for s in stages],
         "bounds": [list(b) for b in bounds],
         "array_time": args.array_time, "array_mem": args.array_mem,
         "array_partition": args.array_partition, "array_mail_type": args.array_mail_type,
@@ -726,7 +802,8 @@ def cmd_advance(args) -> None:
         sobol_seed=config["sobol_seed"], param_registry=registry,
     )
     compress_chunk(parent, chunk_dir_for(parent, start, end), model_dirs,
-                   constant_columns=config["constants"], delete_run_dirs=True)
+                   constant_columns=config["constants"], delete_run_dirs=True,
+                   stages=resolve_stages(parent, explicit=config.get("stages")))
 
     if state["remaining"]:
         nxt = state["remaining"].pop(0)
@@ -756,6 +833,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_comp.add_argument("--chunk_size", type=int, required=True)
     p_comp.add_argument("--chunk_index", type=int, required=True)
     p_comp.add_argument("--constants", nargs="*", default=DEFAULT_CONSTANTS)
+    p_comp.add_argument("--stages", default=None, metavar="STEM[,STEM...]",
+                        help="Ordered names of the save files a run produces, e.g. "
+                             "--stages ZAMS,TAMS,RGB. The last one decides whether a "
+                             "track finished. Omit to read them from stages.json or "
+                             "the inlists.")
     p_comp.add_argument("--no_delete", action="store_true",
                         help="Combine without deleting the moved run dirs.")
     p_comp.set_defaults(func=cmd_compress)
@@ -774,6 +856,11 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="Parameter labels to report for each failed track.")
     p_fin.add_argument("--no_failure_report", dest="failure_report", action="store_false",
                        help="Skip writing the failure report (written by default).")
+    p_fin.add_argument("--stages", default=None, metavar="STEM[,STEM...]",
+                        help="Ordered names of the save files a run produces, e.g. "
+                             "--stages ZAMS,TAMS,RGB. The last one decides whether a "
+                             "track finished. Omit to read them from stages.json or "
+                             "the inlists.")
     p_fin.add_argument("--report_name", default=DEFAULT_REPORT_NAME,
                        help=f"Filename for the failure report (default: {DEFAULT_REPORT_NAME}).")
     p_fin.set_defaults(func=cmd_finalize)
@@ -783,6 +870,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Check that every completed model reached its chunk's HDF5.")
     p_ver.add_argument("--parent_dir", default=None, help="Grid dir (default: current dir).")
     p_ver.add_argument("--hdf5_key", default="history")
+    p_ver.add_argument("--stages", default=None, metavar="STEM[,STEM...]",
+                        help="Ordered names of the save files a run produces, e.g. "
+                             "--stages ZAMS,TAMS,RGB. The last one decides whether a "
+                             "track finished. Omit to read them from stages.json or "
+                             "the inlists.")
     p_ver.add_argument("--num_points", type=int, default=None,
                        help=f"Overrides the bounds in {CHUNK_QUEUE_NAME}.")
     p_ver.add_argument("--chunk_size", type=int, default=None,
@@ -795,6 +887,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sub.add_argument("--chunk_size", type=int, default=DEFAULT_CHUNK_SIZE,
                        help=f"Tasks per batch (default: {DEFAULT_CHUNK_SIZE}).")
     p_sub.add_argument("--constants", nargs="*", default=DEFAULT_CONSTANTS)
+    p_sub.add_argument("--stages", default=None, metavar="STEM[,STEM...]",
+                        help="Ordered names of the save files a run produces, e.g. "
+                             "--stages ZAMS,TAMS,RGB. The last one decides whether a "
+                             "track finished. Omit to read them from stages.json or "
+                             "the inlists.")
     p_sub.add_argument("--python", default=sys.executable)
     p_sub.add_argument("--conda_env", default="py311")
     p_sub.add_argument("--array_time", default="23:59:59")

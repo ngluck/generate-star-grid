@@ -8,10 +8,15 @@ be inspected together instead of one log at a time. It is written by default —
 by `make_grid` (and therefore by every `submit_grid` combine job) and by
 `chunk_grid finalize`.
 
-A track counts as failed if and only if it never produced its **completion save
-file** (`grid_TAMS/TAMS_<dir>.mod` for a main-sequence run). That file is
-written by `save_model_when_terminate` on a genuine stop condition, so its
-absence is the one signal that separates a finished track from one cut short.
+A track counts as failed if and only if it never produced its **last save file**
+(`grid_TAMS/TAMS_<dir>.mod` for a main-sequence run). That file is written by
+`save_model_when_terminate` on a genuine stop condition, so its absence is the
+one signal that separates a finished track from one cut short.
+
+For a run with several stages, the *last* one decides: a track that produced
+ZAMS and TAMS but never RGB has failed. See
+[Multi-Stage Runs](advanced_usage.md#multi-stage-runs) — the report then also
+breaks the failures down by how far each track got.
 
 Nothing is retried automatically on the strength of this report: re-running the
 same track with the same settings usually reproduces the same failure, so the
@@ -54,7 +59,8 @@ No single source is sufficient, so three are merged:
 
 | Source | What it establishes |
 |---|---|
-| The save file's absence | That the track failed at all |
+| The last stage's save file being absent | That the track failed at all |
+| Earlier stages' save files | How far it got before it stopped |
 | `LOGS/log_<dir>_TASK_<id>.txt` | MESA's own verdict (`termination code: ...`), or where it was cut off |
 | `slurm_logs/*_<id>.out` | The SLURM-level cause — a time limit or an OOM kill never appears in the MESA log |
 
@@ -85,16 +91,20 @@ python -m generate_star_grid.failure_report --parent_dir /path/to/my_grid --stdo
 python -m generate_star_grid.failure_report --parent_dir /path/to/my_grid \
     --max_detail_per_reason 20
 ```
+```{tab-item} Name the stages explicitly
+python -m generate_star_grid.failure_report --parent_dir /path/to/my_grid \
+    --stages ZAMS,TAMS,RGB
+```
 ```{tab-item} A continuation run's save files
 python -m generate_star_grid.failure_report --parent_dir /path/to/my_grid \
     --save_dir grid_CONT --save_prefix cont_
 ```
 ````
 
-`--save_dir` / `--save_prefix` / `--save_suffix` exist so the completion test
-stays valid for later evolutionary stages, which save elsewhere or under another
-prefix. Pass `--no_failure_report` to `make_grid` or `chunk_grid finalize` to
-skip writing it.
+Stages are normally read from the grid's `stages.json` or its inlists; `--stages`
+overrides that. The older `--save_dir` / `--save_prefix` / `--save_suffix` trio
+still works as a single-stage shorthand. Pass `--no_failure_report` to
+`make_grid` or `chunk_grid finalize` to skip writing the report.
 
 ## Diagnosing Failed Array Tasks
 
@@ -125,8 +135,8 @@ grids with other or multiple swept parameters, use `submit_grid check-failed` in
 `check-failed` is the general-purpose failure detector, and the machine-readable
 counterpart to [the failure report](#the-failure-report). It scans the `LOGS/`
 directory for per-task log files, reconstructs each task's model directory name
-from the log filename, and reports the task as failed if its
-`grid_TAMS/TAMS_*.mod` save file is absent.
+from the log filename, and reports the task as failed if its **last stage's**
+save file (`grid_TAMS/TAMS_*.mod` for a main-sequence run) is absent.
 
 That save file is the whole test. It is written by `save_model_when_terminate`
 on a genuine stop condition, so its absence is what distinguishes a finished
@@ -172,6 +182,7 @@ For example:
 |---|---|---|
 | `--dest` | yes | Path to the batch directory (contains `LOGS/` and model subdirectories) |
 | `--keys` | yes | Comma-separated parameter labels to extract from the folder name, e.g. `M,Y,Z,alpha` |
+| `--stages` | no | Ordered save-file names, e.g. `ZAMS,TAMS,RGB`; the last decides completion. Read from `stages.json` or the inlists when omitted |
 | `--threshold_mb` | no | Deprecated and ignored; accepted for backward compatibility |
 
 #### How it works internally
@@ -183,13 +194,13 @@ For example:
 3. Reconstructs the model subdirectory name by stripping the `log_` prefix and
    `_TASK_<id>` suffix — this works for any parameter combination without any
    hardcoded assumptions
-4. Checks whether the completion save file `grid_TAMS/TAMS_<folder>.mod` exists —
+4. Checks whether the last stage's save file `grid_TAMS/TAMS_<folder>.mod` exists —
    the sole test for whether the task succeeded
-5. Returns a list of dicts with `task_id`, `folder`, and `params` for each failure
+5. Returns a list of dicts with `task_id`, `folder`, `params`, and `reached` (the
+   furthest stage the run did produce) for each failure
 
-The save file's location is parameterized (`save_dir`, `save_prefix`,
-`save_suffix`), so the same check applies to later evolutionary stages that save
-into e.g. `grid_CONT/` under a `cont_` prefix.
+The stage list comes from the grid's `stages.json` or its inlists, so the same
+check applies unchanged to runs that continue past the main sequence.
 
 This is also the function the combine/cleanup job calls internally to detect
 failures (and again after the retry, if `--retry` was passed). The still-failed

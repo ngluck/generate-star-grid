@@ -35,6 +35,13 @@ from pathlib import Path
 from typing import Optional, Union
 
 from .grid_utils import extract_constants_from_subdir_name
+from .stages import (
+    Stage,
+    completion_stage,
+    reached_stage_index,
+    resolve_stages,
+    stage_save_path,
+)
 
 DEFAULT_SAVE_DIR = "grid_TAMS"
 DEFAULT_SAVE_PREFIX = "TAMS_"
@@ -219,28 +226,37 @@ def collect_failures(
     save_prefix: str = DEFAULT_SAVE_PREFIX,
     save_suffix: str = DEFAULT_SAVE_SUFFIX,
     slurm_log_dir: str = DEFAULT_SLURM_LOG_DIR,
+    stages: Optional[list] = None,
 ) -> tuple:
     """
-    Classify every task in a grid that never produced its save file.
+    Classify every task in a grid that never produced its last save file.
 
     Completion is decided per model by the save file alone -- not by the size of
     history.data, which a track cut off mid-run can easily exceed while never
-    reaching a stop condition.
+    reaching a stop condition. When a run has several stages, the last one
+    decides: a track that produced ZAMS and TAMS but never RGB has failed, and
+    the stages it did reach are recorded in 'reached'.
 
     Args:
-        parent_dir: Grid run directory containing LOGS/ and the save directory.
+        parent_dir: Grid run directory containing LOGS/ and the save directories.
         keys: Parameter labels to extract from each failed directory name
             (default ['M', 'Y', 'Z', 'alpha']).
-        save_dir, save_prefix, save_suffix: Where the completion save file lives
-            (see save_file_path).
+        save_dir, save_prefix, save_suffix: Single-stage shorthand for where the
+            completion save file lives. Only consulted when 'stages' is omitted
+            and they differ from the defaults.
         slurm_log_dir: Subdirectory holding SLURM output files, if any.
+        stages: Ordered save-file stages (see stages.resolve_stages). Resolved
+            from parent_dir when omitted.
 
     Returns:
         (failures, n_total, n_complete). 'failures' is a list of dicts from
-        classify_failure, each with an added 'params' dict, sorted by task id.
+        classify_failure, each with an added 'params' dict and 'reached' stem,
+        sorted by task id.
     """
     parent_dir = Path(parent_dir)
     keys = keys if keys is not None else ["M", "Y", "Z", "alpha"]
+    stages = _stages_for(parent_dir, stages, save_dir, save_prefix, save_suffix)
+    last = completion_stage(stages)
 
     failures = []
     n_total = 0
@@ -254,15 +270,35 @@ def collect_failures(
         folder = re.sub(r"^log_", "", log.stem)
         if match:
             folder = re.sub(r"_TASK_\d+$", "", folder)
-        if save_file_path(parent_dir, folder, save_dir, save_prefix, save_suffix).exists():
+        if stage_save_path(parent_dir, last, folder).exists():
             continue
         record = classify_failure(parent_dir, folder, task_id, log_path=log,
                                   slurm_log_dir=slurm_log_dir)
         record["params"] = extract_constants_from_subdir_name(folder, keys)
+        idx = reached_stage_index(parent_dir, folder, stages)
+        record["reached"] = stages[idx].stem if idx >= 0 else None
         failures.append(record)
 
     failures.sort(key=lambda r: (r["task_id"] if r["task_id"] is not None else -1, r["folder"]))
     return failures, n_total, n_total - len(failures)
+
+
+def _stages_for(parent_dir: Union[str, Path], stages: Optional[list],
+                save_dir: str, save_prefix: str, save_suffix: str) -> list:
+    """
+    Settle on a stage list from either an explicit list or the legacy save args.
+
+    The save_dir/save_prefix/save_suffix trio predates multi-stage support and is
+    still how callers name a single non-default save location, so an explicit
+    value there wins over discovery.
+    """
+    if stages is not None:
+        return stages
+    if (save_dir, save_prefix, save_suffix) != (DEFAULT_SAVE_DIR, DEFAULT_SAVE_PREFIX,
+                                                DEFAULT_SAVE_SUFFIX):
+        return [Stage(stem=save_prefix.rstrip("_") or save_dir, save_dir=save_dir,
+                      prefix=save_prefix, suffix=save_suffix, source="explicit")]
+    return resolve_stages(parent_dir)
 
 
 def _median(values: list) -> float:
@@ -303,6 +339,7 @@ def format_report(
     n_complete: int,
     keys: Optional[list] = None,
     max_detail_per_reason: Optional[int] = None,
+    stages: Optional[list] = None,
 ) -> str:
     """
     Render the collected failures as one plain-text report.
@@ -310,6 +347,11 @@ def format_report(
     The report leads with a summary by reason and the parameter range each
     reason spans -- for a Sobol grid that is what shows whether failures cluster
     in one corner of parameter space -- then lists every failed track.
+
+    A multi-stage run also gets a progress breakdown: how far each failed track
+    got before it stopped. Tracks that die before the first stage and tracks that
+    die one stage short of the end have very different causes, and the reason
+    alone does not separate them.
 
     Args:
         parent_dir: Grid run directory (recorded in the header).
@@ -319,6 +361,8 @@ def format_report(
         keys: Parameter labels to show per track.
         max_detail_per_reason: Truncate each reason's per-track listing to this
             many entries (None lists all of them).
+        stages: Ordered save-file stages. The progress section is omitted for a
+            single-stage grid, where it would say nothing.
 
     Returns:
         The report text.
@@ -364,6 +408,17 @@ def format_report(
     for reason, records in ordered:
         lines.append(f"  {reason}")
         lines.append(f"      {_param_span(records, keys)}")
+
+    if stages and len(stages) > 1:
+        lines += ["", "PROGRESS BY STAGE", "-" * 78,
+                  f"  Completion marker: {stages[-1].save_dir}/"
+                  f"{stages[-1].prefix}<run_dir>{stages[-1].suffix}", ""]
+        counts = Counter(r.get("reached") for r in failures)
+        lines.append(f"{counts.get(None, 0):6d}  reached no stage at all")
+        for stage in stages[:-1]:
+            lines.append(f"{counts.get(stage.stem, 0):6d}  reached {stage.stem}, "
+                         f"stopped before {stages[-1].stem}")
+
     lines += ["", "FAILED TRACKS", "-" * 78]
 
     for reason, records in ordered:
@@ -378,6 +433,8 @@ def format_report(
                 lines.append(f"      {param_str}")
             if record.get("last_model"):
                 lines.append(f"      last MESA model: {record['last_model']}")
+            if stages and len(stages) > 1:
+                lines.append(f"      reached stage: {record.get('reached') or 'none'}")
             if record.get("log") is not None:
                 lines.append(f"      log: {_relative(record['log'], parent_dir)}")
             if record.get("slurm_log") is not None:
@@ -407,6 +464,7 @@ def write_failure_report(
     slurm_log_dir: str = DEFAULT_SLURM_LOG_DIR,
     max_detail_per_reason: Optional[int] = None,
     quiet: bool = False,
+    stages: Optional[list] = None,
 ) -> Optional[Path]:
     """
     Collect every failure in a grid and write the report into the grid directory.
@@ -418,18 +476,20 @@ def write_failure_report(
         parent_dir: Grid run directory.
         keys: Parameter labels to extract from directory names.
         report_name: Filename to write inside parent_dir.
-        save_dir, save_prefix, save_suffix: Completion save file location.
+        save_dir, save_prefix, save_suffix: Single-stage shorthand for the
+            completion save file location.
         slurm_log_dir: Subdirectory holding SLURM output files.
         max_detail_per_reason: Cap the per-track listing under each reason.
         quiet: Suppress the one-line stdout summary.
+        stages: Ordered save-file stages. Resolved from parent_dir when omitted.
 
     Returns:
         Path to the report, or None if there were no task logs to examine.
     """
     parent_dir = Path(parent_dir)
+    stages = _stages_for(parent_dir, stages, save_dir, save_prefix, save_suffix)
     failures, n_total, n_complete = collect_failures(
-        parent_dir, keys=keys, save_dir=save_dir, save_prefix=save_prefix,
-        save_suffix=save_suffix, slurm_log_dir=slurm_log_dir,
+        parent_dir, keys=keys, slurm_log_dir=slurm_log_dir, stages=stages,
     )
     if n_total == 0:
         if not quiet:
@@ -437,7 +497,7 @@ def write_failure_report(
         return None
 
     text = format_report(parent_dir, failures, n_total, n_complete, keys=keys,
-                         max_detail_per_reason=max_detail_per_reason)
+                         max_detail_per_reason=max_detail_per_reason, stages=stages)
     out = parent_dir / report_name
     out.write_text(text)
 
@@ -461,9 +521,15 @@ if __name__ == "__main__":
                         help="Parameter labels to extract from directory names.")
     parser.add_argument("--report_name", default=DEFAULT_REPORT_NAME,
                         help=f"Filename written into the grid dir (default: {DEFAULT_REPORT_NAME}).")
+    parser.add_argument("--stages", default=None, metavar="STEM[,STEM...]",
+                        help="Ordered names of the save files a run produces, e.g. "
+                             "--stages ZAMS,TAMS,RGB. The last one decides whether a "
+                             "track finished. Omit to read them from the grid's "
+                             "stages.json or its inlists.")
     parser.add_argument("--save_dir", default=DEFAULT_SAVE_DIR,
-                        help="Directory holding the completion save files "
-                             f"(default: {DEFAULT_SAVE_DIR}; use grid_CONT for continuation runs).")
+                        help="Single-stage shorthand for the directory holding the "
+                             f"completion save files (default: {DEFAULT_SAVE_DIR}). "
+                             "Prefer --stages.")
     parser.add_argument("--save_prefix", default=DEFAULT_SAVE_PREFIX,
                         help=f"Save filename prefix (default: {DEFAULT_SAVE_PREFIX}).")
     parser.add_argument("--save_suffix", default=DEFAULT_SAVE_SUFFIX,
@@ -477,18 +543,19 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     _parent = Path(args.parent_dir) if args.parent_dir else Path.cwd()
+    _stages = resolve_stages(_parent, explicit=args.stages) if args.stages else None
     if args.stdout:
+        _stages = _stages_for(_parent, _stages, args.save_dir, args.save_prefix,
+                              args.save_suffix)
         _failures, _n_total, _n_complete = collect_failures(
-            _parent, keys=args.constants, save_dir=args.save_dir,
-            save_prefix=args.save_prefix, save_suffix=args.save_suffix,
-            slurm_log_dir=args.slurm_log_dir,
+            _parent, keys=args.constants, slurm_log_dir=args.slurm_log_dir, stages=_stages,
         )
         print(format_report(_parent, _failures, _n_total, _n_complete, keys=args.constants,
-                            max_detail_per_reason=args.max_detail_per_reason))
+                            max_detail_per_reason=args.max_detail_per_reason, stages=_stages))
     else:
         write_failure_report(
             _parent, keys=args.constants, report_name=args.report_name,
             save_dir=args.save_dir, save_prefix=args.save_prefix,
             save_suffix=args.save_suffix, slurm_log_dir=args.slurm_log_dir,
-            max_detail_per_reason=args.max_detail_per_reason,
+            max_detail_per_reason=args.max_detail_per_reason, stages=_stages,
         )

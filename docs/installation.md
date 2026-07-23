@@ -160,8 +160,9 @@ back to its own defaults, which changes the columns available in
 ### What the Pipeline Creates at Run Time
 
 You do **not** need to create these — `grid_utils` makes them on the first run:
-`notes.txt`, `LOGS/`, one `M_..._Y_..._Z_..._alpha_.../` directory per model,
-`grid_TAMS/`, `grid_inlists/`, and `grid_profiles/`. See
+`notes.txt`, `stages.json`, `LOGS/`, one `M_..._Y_..._Z_..._alpha_.../` directory
+per model, one `grid_<STEM>/` per save stage (`grid_TAMS/` for a main-sequence
+run), `grid_inlists/`, and `grid_profiles/`. See
 [Output Structure](output.md#directory-layout) for the full layout.
 
 Post-processing outputs (`combined_history.hdf5`, batch directories, queue JSON
