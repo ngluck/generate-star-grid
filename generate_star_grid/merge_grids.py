@@ -12,7 +12,8 @@ in canonical parameter order — e.g. mytemplate_varM_varZ for a grid that
 swept mass (inner) and metallicity (outer). All batch directories are then
 moved inside the merged directory.
 
-Usage (standalone):
+Usage (standalone)::
+
     # Auto-discover batch dirs and config from queue.json:
     python -m generate_star_grid.merge_grids --queue_file /path/to/queue.json
 
@@ -215,6 +216,13 @@ def merge_batch_hdf5(
             print(f"  Appended {nrows} rows. Next track offset: {track_offset}")
 
     return total_rows
+
+
+def _hdf5_nrows(hdf5_path: Path, hdf5_key: str) -> int:
+    """Return the row count of hdf5_key in an HDF5 store (0 if key absent)."""
+    with pd.HDFStore(str(hdf5_path), mode="r") as store:
+        storer = store.get_storer(hdf5_key)
+        return int(storer.nrows) if storer is not None else 0
 
 
 def _extract_var_labels(dir_name: str) -> list:

@@ -41,3 +41,6 @@ make/
 .vscode/
 *.swp
 *~
+
+# Claude Code local state / worktrees
+.claude/
