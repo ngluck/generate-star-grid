@@ -10,6 +10,10 @@ Supports linear and Sobol-sampled grids over any combination of MESA parameters
 (initial mass, metallicity Z, helium abundance Y, mixing-length α, etc.) with
 SLURM job-array submission for HPC clusters.
 
+This package specifically helps users circumvent low disk storage during grid
+generation by compressing the files of successfully simulated stars, while keeping
+detailed notes and files of failed runs for later evaluation.
+
 ::::{grid} 1 2 2 3
 :gutter: 2
 
