@@ -180,20 +180,34 @@ immediately distinguishable in `squeue`, `sacct`, and SLURM notification email s
 lines. The full list of retried task IDs, folders, and initial conditions is always
 written to the batch's `combine_<jobid>.out` stdout file.
 
-## Preserved Directories for Persistent Failures
+## Preserved Evidence for Persistent Failures
 
-When a task is left failed — immediately, or after the one retry if `--retry`
-was passed — two things happen:
+Cleanup after each batch reclaims a lot of disk: run directories, TAMS save
+files, archived inlists, MESA logs and SLURM output are all removed once the
+batch's `combined_history.hdf5` exists. **Everything belonging to a still-failed
+task is kept**, since that is exactly what you need to diagnose it:
 
-- Its `M_*` run directory is **not** deleted during cleanup, so you can inspect
-  the history files, MESA output, and any individual log files to diagnose what
-  went wrong.
-- It is **excluded from `combined_history.hdf5`** — the combine job passes the
-  still-failed folder names to `make_grid --exclude_dirs`, so the exclusion is
-  enforced in the HDF5, not just noted in `notes.txt`.
+| Kept for a failed task | Why |
+|---|---|
+| `M_*/` run directory | Its `DATA/`, `photos/` and MESA output |
+| `LOGS/log_<dir>_TASK_<id>.txt` | MESA's own output — where it stopped and why |
+| `slurm_<jobid>_<id>.out` | The SLURM-level cause (time limit, OOM) |
+| `grid_inlists/inlist_<dir>` | The exact parameter values that were run |
 
-The corresponding entry in `notes.txt` records the task ID, folder name, and
-initial conditions.
+A failed task is also **excluded from `combined_history.hdf5`** — the combine job
+passes the still-failed folder names to `make_grid --exclude_dirs`, so the
+exclusion is enforced in the HDF5, not just noted in `notes.txt`. The
+corresponding `notes.txt` entry records the task ID, folder name, and initial
+conditions.
+
+````{important}
+The order matters and is load-bearing: `make_grid` writes
+`failure_report.txt` **before** any cleanup, while `LOGS/` and `grid_TAMS/` are
+still intact — those are what the report is built from. Once a batch has been
+cleaned, the report cannot be regenerated for the tasks that succeeded, so it is
+the durable record of what the batch's completion looked like. Do not move the
+cleanup ahead of the combine step.
+````
 
 Each batch's combine job also writes a
 [failure report](troubleshooting.md#the-failure-report) into the batch directory,

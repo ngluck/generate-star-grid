@@ -435,23 +435,48 @@ else
     echo "SEISTRON_BASE_DIR not set; skipping optional HR diagram plot."
 fi
 
+# Cleanup runs only after make_grid has written failure_report.txt, which is
+# built from LOGS/ and grid_TAMS/. Everything a still-failed task needs for
+# diagnosis is kept: its run directory, MESA log, SLURM output and archived
+# inlist. Only artifacts of tasks that succeeded are removed.
 echo "Deleting run directories and artifacts..."
 if [ -n "$FAILED" ]; then
     FAILED_FOLDERS=$(echo "$FAILED" | cut -d'|' -f2)
+    FAILED_IDS=$(echo "$FAILED" | cut -d'|' -f1)
     for dir in "$DEST"/M_*/; do
         folder=$(basename "$dir")
         if ! echo "$FAILED_FOLDERS" | grep -qx "$folder"; then
             rm -rf "$dir"
         fi
     done
-    echo "Kept M_ directories for still-failed tasks (see notes.txt for details)."
+    for f in "$DEST"/grid_inlists/inlist_*; do
+        [ -e "$f" ] || continue
+        folder=$(basename "$f" | sed 's/^inlist_//')
+        echo "$FAILED_FOLDERS" | grep -qx "$folder" || rm -f "$f"
+    done
+    for f in "$DEST"/LOGS/*; do
+        [ -e "$f" ] || continue
+        tid=$(basename "$f" .txt | awk -F_TASK_ '{{print $2}}')
+        if [ -z "$tid" ] || ! echo "$FAILED_IDS" | grep -qx "$tid"; then
+            rm -f "$f"
+        fi
+    done
+    for f in "$DEST"/slurm_*.out; do
+        [ -e "$f" ] || continue
+        tid=$(basename "$f" .out | awk -F_ '{{print $NF}}')
+        if [ -z "$tid" ] || ! echo "$FAILED_IDS" | grep -qx "$tid"; then
+            rm -f "$f"
+        fi
+    done
+    rm -f "$DEST"/grid_TAMS/TAMS_*.mod
+    echo "Kept run dir, MESA log, SLURM output and archived inlist for each still-failed task."
 else
     rm -rf "$DEST"/M_*/
+    rm -f  "$DEST"/grid_TAMS/TAMS_*.mod
+    rm -f  "$DEST"/grid_inlists/inlist_*
+    find   "$DEST/LOGS" -type f -delete
+    rm -f  "$DEST"/slurm_*.out
 fi
-rm -f  "$DEST"/grid_TAMS/TAMS_*.mod
-rm -f  "$DEST"/grid_inlists/inlist_*
-find   "$DEST/LOGS" -type f -delete
-rm -f  "$DEST"/slurm_*.out
 
 echo "Done. HDF5 saved at $DEST/combined_history.hdf5"
 

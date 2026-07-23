@@ -38,6 +38,9 @@ def main(parent_dir: Path, save_as_hdf5: bool, hdf5_filename: str, constant_colu
     print(f"Loaded {len(df)} preview rows.")
     print("Preview:\n", df.head())
 
+    # Before cleanup, always: the report is built from LOGS/ and grid_TAMS/,
+    # which cleanup (here and in the submit_grid combine job) removes for every
+    # task that succeeded. Afterwards it cannot be regenerated.
     if failure_report:
         write_failure_report(parent_dir, keys=constant_columns, report_name=report_name)
 
